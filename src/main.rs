@@ -1,11 +1,16 @@
-use axum::{Router, routing::post};
+use axum::routing::post;
 
+use app_home_services::AppState;
 use app_home_services::adapters::inbound::login_routes::login_password_handler;
+use app_home_services::adapters::inbound::logout_routes::logout_handler;
 use app_home_services::adapters::inbound::oauth_callback::login_google_handler;
+use app_home_services::adapters::inbound::refresh_routes::refresh_token_handler;
 use app_home_services::adapters::outbound::google_auth_provider::GoogleAuthProvider;
+use app_home_services::adapters::outbound::jwt_service::JwtServiceImpl;
+use app_home_services::adapters::outbound::memory_rate_limiter::MemoryRateLimiter;
+use app_home_services::adapters::outbound::postgres_session_repo::PostgresSessionRepo;
 use app_home_services::adapters::outbound::postgres_user_repo::PostgresUserRepo;
 use app_home_services::infrastructure::config::settings::Settings;
-use app_home_services::AppState;
 
 #[tokio::main]
 async fn main() {
@@ -24,68 +29,114 @@ async fn main() {
         .await
         .expect("Failed to run database migrations");
 
-    seed_default_user(&pool, &settings).await;
+    if let Err(e) = seed_default_user(&pool, &settings).await {
+        tracing::error!(error = %e, "Default user check failed");
+        std::process::exit(1);
+    }
 
-    let user_repo = PostgresUserRepo::new(pool);
+    let user_repo = PostgresUserRepo::new(pool.clone());
+    let session_repo = PostgresSessionRepo::new(pool);
     let auth_provider = GoogleAuthProvider::new(settings.google_client_id.clone());
+    let jwt_service = JwtServiceImpl::new(
+        &settings.jwt_secret,
+        settings.access_token_expiry_minutes,
+        settings.refresh_token_expiry_days,
+    );
+    let rate_limiter = MemoryRateLimiter::new(
+        settings.rate_limit_max_attempts,
+        settings.rate_limit_window_seconds,
+    );
 
-    let state = AppState::new(user_repo, auth_provider, settings);
+    let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
-    let app = Router::new()
+    let state = AppState::new(
+        user_repo,
+        session_repo,
+        auth_provider,
+        jwt_service,
+        rate_limiter,
+        settings,
+    );
+
+    let cors = {
+        let origins_str = &state.settings.cors_allowed_origins;
+        if origins_str.is_empty() {
+            tracing::info!("CORS: same-origin only (no origins configured)");
+            tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::AllowOrigin::list(
+                Vec::<axum::http::HeaderValue>::new(),
+            ))
+        } else {
+            let origins: Vec<axum::http::HeaderValue> = origins_str
+                .split(',')
+                .filter_map(|o| o.trim().parse::<axum::http::HeaderValue>().ok())
+                .collect();
+            tracing::info!(?origins, "CORS: configured origins");
+            tower_http::cors::CorsLayer::new()
+                .allow_origin(tower_http::cors::AllowOrigin::list(origins))
+                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+                .allow_headers([
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::header::AUTHORIZATION,
+                ])
+        }
+    };
+
+    let app = axum::Router::new()
         .route("/api/auth/login/password", post(login_password_handler))
         .route("/api/auth/login/google", post(login_google_handler))
+        .route("/api/auth/logout", post(logout_handler))
+        .route("/api/auth/refresh", post(refresh_token_handler))
         .route("/api/health", axum::routing::get(health_check))
+        .layer(cors)
         .with_state(state);
 
-    let addr = format!("{}:{}", "0.0.0.0", 3000);
-    tracing::info!("Listening on {}", addr);
+    tracing::info!(address = %addr, "Listening");
 
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .expect("Failed to bind address");
 
-    axum::serve(listener, app)
-        .await
-        .expect("Server error");
+    axum::serve(listener, app).await.expect("Server error");
 }
 
 async fn health_check() -> axum::Json<serde_json::Value> {
     axum::Json(serde_json::json!({"status": "ok"}))
 }
 
-async fn seed_default_user(pool: &sqlx::PgPool, settings: &Settings) {
-    let existing = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE auth_provider = 'local'")
-        .fetch_one(pool)
-        .await;
+async fn seed_default_user(pool: &sqlx::PgPool, settings: &Settings) -> Result<bool, String> {
+    let count =
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE auth_provider = 'local'")
+            .fetch_one(pool)
+            .await
+            .map_err(|e| format!("database query failed: {e}"))?;
 
-    match existing {
-        Ok(0) | Err(_) => {
-            let password_hash = bcrypt::hash(&settings.default_user_password, bcrypt::DEFAULT_COST)
-                .expect("Failed to hash default password");
-
-            let id = uuid::Uuid::now_v7();
-            let now = chrono::Utc::now();
-
-            let result = sqlx::query(
-                r#"INSERT INTO users (id, username, email, display_name, password_hash, auth_provider, created_at, updated_at)
-                VALUES ($1, $2, $3, $4, $5, 'local', $6, $7)
-                ON CONFLICT (username) DO NOTHING"#,
-            )
-            .bind(id)
-            .bind(&settings.default_user_username)
-            .bind(&settings.default_user_email)
-            .bind("Administrator")
-            .bind(&password_hash)
-            .bind(now)
-            .bind(now)
-            .execute(pool)
-            .await;
-
-            match result {
-                Ok(_) => tracing::info!("Default user seeded successfully"),
-                Err(e) => tracing::error!(error = %e, "Failed to seed default user"),
-            }
-        }
-        Ok(_) => tracing::info!("Default user already exists, skipping seed"),
+    if count > 0 {
+        tracing::info!(username = %settings.default_user_username, "Default user already exists");
+        return Ok(true);
     }
+
+    let password_hash = bcrypt::hash(&settings.default_user_password, bcrypt::DEFAULT_COST)
+        .map_err(|e| format!("password hashing failed: {e}"))?;
+
+    let id = uuid::Uuid::now_v7();
+    let now = chrono::Utc::now();
+
+    sqlx::query(
+        r#"INSERT INTO users (id, username, email, display_name, password_hash, auth_provider, created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, 'local', $6, $7)
+        ON CONFLICT (username) DO NOTHING"#,
+    )
+    .bind(id)
+    .bind(&settings.default_user_username)
+    .bind(&settings.default_user_email)
+    .bind("Administrator")
+    .bind(&password_hash)
+    .bind(now)
+    .bind(now)
+    .execute(pool)
+    .await
+    .map_err(|e| format!("default user insert failed: {e}"))?;
+
+    tracing::info!(username = %settings.default_user_username, "Default user created successfully");
+    Ok(false)
 }

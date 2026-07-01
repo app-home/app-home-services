@@ -46,12 +46,16 @@ fn test_user_action_creation() {
     let action = UserAction {
         id: uuid::Uuid::now_v7(),
         user_id,
+        session_id: None,
+        event_type: "login".to_string(),
         auth_method: "password".to_string(),
         created_at: now,
     };
 
     assert_eq!(action.user_id, user_id);
     assert_eq!(action.auth_method, "password");
+    assert_eq!(action.event_type, "login");
+    assert!(action.session_id.is_none());
 }
 
 #[test]
@@ -59,6 +63,8 @@ fn test_user_action_google_oauth_method() {
     let action = UserAction {
         id: uuid::Uuid::now_v7(),
         user_id: uuid::Uuid::now_v7(),
+        session_id: Some(uuid::Uuid::now_v7()),
+        event_type: "login".to_string(),
         auth_method: "google_oauth".to_string(),
         created_at: chrono::Utc::now(),
     };

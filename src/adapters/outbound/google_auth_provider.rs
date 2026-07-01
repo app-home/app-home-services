@@ -30,14 +30,15 @@ impl AuthProvider for GoogleAuthProvider {
             .await
             .map_err(|_| AuthError::TokenVerificationFailed)?;
 
-        let header = jsonwebtoken::decode_header(token)
-            .map_err(|_| AuthError::TokenVerificationFailed)?;
+        let header =
+            jsonwebtoken::decode_header(token).map_err(|_| AuthError::TokenVerificationFailed)?;
 
-        let kid = header.kid.as_ref()
+        let kid = header
+            .kid
+            .as_ref()
             .ok_or(AuthError::TokenVerificationFailed)?;
 
-        let jwk = jwks.find(kid)
-            .ok_or(AuthError::TokenVerificationFailed)?;
+        let jwk = jwks.find(kid).ok_or(AuthError::TokenVerificationFailed)?;
 
         let decoding_key = jsonwebtoken::DecodingKey::from_jwk(jwk)
             .map_err(|_| AuthError::TokenVerificationFailed)?;
@@ -47,12 +48,8 @@ impl AuthProvider for GoogleAuthProvider {
         validation.set_audience(&[&self.client_id]);
         validation.set_required_spec_claims(&["sub", "email", "iss", "aud"]);
 
-        let token_data = jsonwebtoken::decode::<GoogleClaims>(
-            token,
-            &decoding_key,
-            &validation,
-        )
-        .map_err(|_| AuthError::TokenVerificationFailed)?;
+        let token_data = jsonwebtoken::decode::<GoogleClaims>(token, &decoding_key, &validation)
+            .map_err(|_| AuthError::TokenVerificationFailed)?;
 
         let claims = token_data.claims;
 

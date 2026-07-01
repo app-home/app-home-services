@@ -20,7 +20,7 @@ dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 jsonwebtoken = "9"
 async-trait = "0.1"
+tower-http = { version = "0.6", features = ["cors"] }
 
 [dev-dependencies]
-tower-http = { version = "0.6", features = ["cors", "trace"] }
 tokio-test = "0.4"

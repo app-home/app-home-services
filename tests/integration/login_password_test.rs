@@ -9,7 +9,7 @@
 
 #[tokio::test]
 #[ignore]
-async fn test_valid_login_returns_200() {
+async fn test_valid_login_returns_tokens() {
     let client = reqwest::Client::new();
     let resp = client
         .post("http://localhost:3000/api/auth/login/password")
@@ -25,6 +25,8 @@ async fn test_valid_login_returns_200() {
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["status"], "authenticated");
     assert!(body["user_id"].is_string());
+    assert!(body["access_token"].is_string());
+    assert!(body["refresh_token"].is_string());
 }
 
 #[tokio::test]
@@ -62,7 +64,6 @@ async fn test_nonexistent_username_returns_401() {
 
     assert_eq!(resp.status(), 401);
     let body: serde_json::Value = resp.json().await.unwrap();
-    // Must return the same message as wrong password
     assert_eq!(body["error"], "Invalid username or password");
 }
 
