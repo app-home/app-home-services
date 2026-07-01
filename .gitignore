@@ -1,0 +1,16 @@
+target/
+debug/
+release/
+*.rs.bk
+*.rlib
+*.prof*
+*.log
+.env
+.env.local
+.env.production
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

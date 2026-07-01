@@ -1,22 +1,17 @@
 <!--
   Sync Impact Report
 
-  Version change: (template/unversioned) → 1.0.0
+  Version change: 1.0.0 → 1.1.0
   Modified principles:
-    - [PRINCIPLE_1_NAME] → "I. Hexagonal Architecture (NON-NEGOTIABLE)"
-    - [PRINCIPLE_2_NAME] → "II. Domain-Driven Design Principles"
-    - [PRINCIPLE_3_NAME] → "III. Rust-First Development"
-    - [PRINCIPLE_4_NAME] → "IV. Test-First and Quality Gates (NON-NEGOTIABLE)"
-    - [PRINCIPLE_5_NAME] → "V. PostgreSQL Persistence Standards · VI. Observability and Reliability"
-  Added sections:
-    - "Technology Constraints" (mapped from SECTION_2)
-    - "Project Structure Standards" (mapped from SECTION_3, includes Development Workflow)
+    - "V. PostgreSQL Persistence Standards · VI. Observability and Reliability" →
+      UUID primary key rule added under PostgreSQL Persistence Standards
+  Added sections: None
   Removed sections: None
   Templates requiring updates:
     - .specify/templates/plan-template.md: ✅ No changes needed (generic Constitution Check)
     - .specify/templates/spec-template.md: ✅ No changes needed
     - .specify/templates/tasks-template.md: ✅ No changes needed
-  Command files (.opencode/commands/): ✅ All use generic speckit.* naming; no outdated references
+  Command files (.opencode/commands/): ✅ No outdated references
   Runtime guidance (README.md, AGENTS.md): ✅ No constitution references to update
   Follow-up TODOs: None
 -->
@@ -109,6 +104,7 @@ Database access must:
 - Use migrations for schema changes.
 - Never modify production schemas manually.
 - Keep SQL separated from business logic.
+- Use UUID primary keys (id columns) for all tables, not auto-incrementing integers.
 
 Database models must not leak into domain entities.
 
@@ -229,4 +225,4 @@ All code reviews must verify compliance with:
 
 Complexity must be justified. Prefer simple solutions that satisfy current requirements.
 
-**Version**: 1.0.0 | **Ratified**: 2026-07-01 | **Last Amended**: 2026-07-01
+**Version**: 1.1.0 | **Ratified**: 2026-07-01 | **Last Amended**: 2026-07-01
