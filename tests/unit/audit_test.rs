@@ -1,25 +1,53 @@
 use app_home_services::domain::entities::user_action::{NewUserAction, UserAction};
 
 #[test]
-fn test_new_user_action_creation() {
-    let user_id = uuid::Uuid::now_v7();
-    let action = NewUserAction {
-        user_id,
-        auth_method: "password".to_string(),
-    };
+fn test_new_user_action_login() {
+    let action = NewUserAction::new_login(uuid::Uuid::now_v7(), "password".to_string());
 
-    assert_eq!(action.user_id, user_id);
-    assert_eq!(action.auth_method, "password");
+    assert_eq!(action.event_type, "login");
+    assert_eq!(action.session_id, None);
+    assert!(action.validate().is_ok());
 }
 
 #[test]
-fn test_new_user_action_google_oauth() {
+fn test_new_user_action_logout() {
+    let session_id = uuid::Uuid::now_v7();
+    let action = NewUserAction::new_logout(
+        uuid::Uuid::now_v7(),
+        session_id,
+        "password".to_string(),
+    );
+
+    assert_eq!(action.event_type, "logout");
+    assert_eq!(action.session_id, Some(session_id));
+    assert!(action.validate().is_ok());
+}
+
+#[test]
+fn test_new_user_action_refresh() {
+    let session_id = uuid::Uuid::now_v7();
+    let action = NewUserAction::new_refresh(
+        uuid::Uuid::now_v7(),
+        session_id,
+        "google_oauth".to_string(),
+    );
+
+    assert_eq!(action.event_type, "refresh");
+    assert_eq!(action.session_id, Some(session_id));
+    assert_eq!(action.auth_method, "google_oauth");
+    assert!(action.validate().is_ok());
+}
+
+#[test]
+fn test_new_user_action_invalid_event_type() {
     let action = NewUserAction {
         user_id: uuid::Uuid::now_v7(),
-        auth_method: "google_oauth".to_string(),
+        session_id: None,
+        event_type: "invalid".to_string(),
+        auth_method: "password".to_string(),
     };
 
-    assert_eq!(action.auth_method, "google_oauth");
+    assert!(action.validate().is_err());
 }
 
 #[test]
@@ -28,16 +56,16 @@ fn test_user_action_immutable_after_creation() {
     let action = UserAction {
         id: uuid::Uuid::now_v7(),
         user_id: uuid::Uuid::now_v7(),
+        session_id: Some(uuid::Uuid::now_v7()),
+        event_type: "login".to_string(),
         auth_method: "password".to_string(),
         created_at: now,
     };
 
-    // Verify all fields are accessible
     let _ = action.id;
     let _ = action.user_id;
+    let _ = action.session_id;
+    let _ = action.event_type;
     let _ = action.auth_method;
     let _ = action.created_at;
-
-    // Append-only: no update methods should exist
-    // If this compiles, the struct has no mutable operations on its fields
 }

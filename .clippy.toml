@@ -1,3 +1,0 @@
-# Clippy configuration
-# Warn on common mistakes, allow pedantic style choices
-level = "warn"

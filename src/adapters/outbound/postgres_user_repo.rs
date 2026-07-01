@@ -86,12 +86,14 @@ impl UserRepository for PostgresUserRepo {
         let now = Utc::now();
 
         let row = sqlx::query_as::<_, UserActionRow>(
-            r#"INSERT INTO user_actions (id, user_id, auth_method, created_at)
-            VALUES ($1, $2, $3, $4)
-            RETURNING id, user_id, auth_method, created_at"#,
+            r#"INSERT INTO user_actions (id, user_id, session_id, event_type, auth_method, created_at)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING id, user_id, session_id, event_type, auth_method, created_at"#,
         )
         .bind(id)
         .bind(action.user_id)
+        .bind(action.session_id)
+        .bind(&action.event_type)
         .bind(&action.auth_method)
         .bind(now)
         .fetch_one(&self.pool)
@@ -101,6 +103,8 @@ impl UserRepository for PostgresUserRepo {
         Ok(UserAction {
             id: row.id,
             user_id: row.user_id,
+            session_id: row.session_id,
+            event_type: row.event_type,
             auth_method: row.auth_method,
             created_at: row.created_at,
         })
@@ -138,6 +142,8 @@ impl UserRow {
 struct UserActionRow {
     id: Uuid,
     user_id: Uuid,
+    session_id: Option<Uuid>,
+    event_type: String,
     auth_method: String,
     created_at: chrono::DateTime<Utc>,
 }
