@@ -1,50 +1,232 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+<!--
+  Sync Impact Report
+
+  Version change: (template/unversioned) → 1.0.0
+  Modified principles:
+    - [PRINCIPLE_1_NAME] → "I. Hexagonal Architecture (NON-NEGOTIABLE)"
+    - [PRINCIPLE_2_NAME] → "II. Domain-Driven Design Principles"
+    - [PRINCIPLE_3_NAME] → "III. Rust-First Development"
+    - [PRINCIPLE_4_NAME] → "IV. Test-First and Quality Gates (NON-NEGOTIABLE)"
+    - [PRINCIPLE_5_NAME] → "V. PostgreSQL Persistence Standards · VI. Observability and Reliability"
+  Added sections:
+    - "Technology Constraints" (mapped from SECTION_2)
+    - "Project Structure Standards" (mapped from SECTION_3, includes Development Workflow)
+  Removed sections: None
+  Templates requiring updates:
+    - .specify/templates/plan-template.md: ✅ No changes needed (generic Constitution Check)
+    - .specify/templates/spec-template.md: ✅ No changes needed
+    - .specify/templates/tasks-template.md: ✅ No changes needed
+  Command files (.opencode/commands/): ✅ All use generic speckit.* naming; no outdated references
+  Runtime guidance (README.md, AGENTS.md): ✅ No constitution references to update
+  Follow-up TODOs: None
+-->
+
+# App Home Services Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Hexagonal Architecture (NON-NEGOTIABLE)
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+The system must follow Hexagonal Architecture (Ports and Adapters).
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+The dependency direction must always point inward:
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+Adapters → Application → Domain
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+The Domain layer is the core of the system and must not depend on:
+- Database implementations
+- HTTP frameworks
+- External services
+- Infrastructure concerns
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+Business rules must live in the Domain and Application layers.
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+Infrastructure details must be replaceable through defined ports/interfaces.
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+---
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+### II. Domain-Driven Design Principles
+
+The codebase must be organized around business capabilities and domain concepts.
+
+Domain models must:
+- Represent business rules explicitly.
+- Avoid exposing infrastructure details.
+- Protect their own invariants.
+
+Use cases must represent application actions and orchestrate domain behavior.
+
+Entities, Value Objects, Aggregates, and Domain Services should be created when they provide real business value.
+
+---
+
+### III. Rust-First Development
+
+The project must use Rust as the primary programming language.
+
+Requirements:
+
+- Rust Edition 2024.
+- Code must compile with zero warnings.
+- Formatting must follow `cargo fmt`.
+- Static analysis must pass with `cargo clippy`.
+- Unsafe Rust must be avoided unless explicitly justified.
+
+Error handling must be explicit:
+- Use `Result` for recoverable failures.
+- Use `thiserror` for domain/application errors.
+- Avoid `unwrap()` and `expect()` in production code.
+
+---
+
+### IV. Test-First and Quality Gates (NON-NEGOTIABLE)
+
+Tests are required for all business-critical functionality.
+
+The development workflow follows:
+
+1. Define expected behavior.
+2. Create tests.
+3. Implement functionality.
+4. Refactor while keeping tests green.
+
+Required test levels:
+
+- Unit tests for domain rules.
+- Integration tests for adapters.
+- Database tests for persistence behavior.
+
+Every feature must include validation criteria before implementation.
+
+---
+
+### V. PostgreSQL Persistence Standards · VI. Observability and Reliability
+
+PostgreSQL is the primary relational database.
+
+Database access must:
+- Use SQLx.
+- Use migrations for schema changes.
+- Never modify production schemas manually.
+- Keep SQL separated from business logic.
+
+Database models must not leak into domain entities.
+
+The persistence layer belongs in infrastructure adapters.
+
+The application must provide operational visibility.
+
+Requirements:
+- Structured logging using `tracing`.
+- Meaningful error messages.
+- Correlation identifiers for distributed operations.
+- Health checks for external dependencies.
+
+Failures must be handled explicitly and must not silently disappear.
+
+---
+
+## Technology Constraints
+
+The project technology stack is:
+
+### Backend
+
+- Rust
+- Tokio async runtime
+- Axum for HTTP APIs
+- SQLx for PostgreSQL access
+
+### Database
+
+- PostgreSQL
+- SQLx migrations
+
+### Development Tools
+
+- Cargo
+- cargo fmt
+- cargo clippy
+- Automated tests
+
+Additional dependencies must be justified according to project needs.
+
+---
+
+## Project Structure Standards
+
+The project should follow this organization:
+
+```
+src/
+├── domain/
+│   ├── entities/
+│   ├── value_objects/
+│   └── errors.rs
+│
+├── application/
+│   ├── use_cases/
+│   ├── services/
+│   └── ports/
+│
+├── adapters/
+│   ├── inbound/
+│   └── outbound/
+│
+├── infrastructure/
+│   ├── database/
+│   ├── config/
+│   └── telemetry/
+│
+└── main.rs
+```
+
+The folder structure may evolve, but architectural boundaries must remain clear.
+
+### Development Workflow
+
+Every feature must follow the Spec Driven Development workflow:
+
+1. Create feature specification.
+2. Review requirements and acceptance criteria.
+3. Generate implementation plan.
+4. Generate development tasks.
+5. Implement following the constitution rules.
+6. Validate with tests and quality checks.
+
+Feature specifications must define:
+- Business objective.
+- Functional requirements.
+- Acceptance criteria.
+- Constraints.
+
+Implementation plans must define:
+- Architectural changes.
+- Components affected.
+- Database changes.
+- Testing strategy.
+
+---
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution defines the mandatory engineering rules of the project.
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+Any implementation, feature specification, or technical decision must comply with these principles.
+
+Changes to this constitution require:
+- Documentation of the motivation.
+- Review of affected components.
+- Migration plan if existing code is impacted.
+
+The constitution has priority over individual implementation preferences.
+
+All code reviews must verify compliance with:
+- Architecture rules.
+- Testing requirements.
+- Security considerations.
+- Quality standards.
+
+Complexity must be justified. Prefer simple solutions that satisfy current requirements.
+
+**Version**: 1.0.0 | **Ratified**: 2026-07-01 | **Last Amended**: 2026-07-01
