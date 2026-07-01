@@ -1,4 +1,5 @@
 <!-- SPECKIT START -->
-For additional context about technologies to be used, project structure,
-shell commands, and other important information, read the current plan
+The current implementation plan is at `specs/001-user-auth/plan.md`.
+Read it for context about technologies, project structure, and the
+implementation approach for the user authentication feature.
 <!-- SPECKIT END -->
