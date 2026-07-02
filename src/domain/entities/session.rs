@@ -13,6 +13,7 @@ pub struct Session {
 
 #[derive(Debug, Clone)]
 pub struct NewSession {
+    pub id: Uuid,
     pub user_id: Uuid,
     pub refresh_token_hash: String,
     pub expires_at: DateTime<Utc>,
@@ -29,8 +30,9 @@ impl Session {
 }
 
 impl NewSession {
-    pub fn new(user_id: Uuid, refresh_token_hash: String, expires_at: DateTime<Utc>) -> Self {
+    pub fn new(id: Uuid, user_id: Uuid, refresh_token_hash: String, expires_at: DateTime<Utc>) -> Self {
         Self {
+            id,
             user_id,
             refresh_token_hash,
             expires_at,
