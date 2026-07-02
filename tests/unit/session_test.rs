@@ -7,6 +7,7 @@ fn test_new_session_creation() {
     let user_id = Uuid::now_v7();
     let expires_at = Utc::now() + Duration::hours(1);
     let session = NewSession::new(
+        Uuid::now_v7(),
         user_id,
         "hashed_refresh_token".to_string(),
         expires_at,
@@ -20,6 +21,7 @@ fn test_new_session_creation() {
 #[test]
 fn test_new_session_empty_hash_fails_validation() {
     let session = NewSession {
+        id: Uuid::now_v7(),
         user_id: Uuid::now_v7(),
         refresh_token_hash: String::new(),
         expires_at: Utc::now() + Duration::hours(1),
@@ -31,6 +33,7 @@ fn test_new_session_empty_hash_fails_validation() {
 #[test]
 fn test_new_session_expired_fails_validation() {
     let session = NewSession {
+        id: Uuid::now_v7(),
         user_id: Uuid::now_v7(),
         refresh_token_hash: "hash".to_string(),
         expires_at: Utc::now() - Duration::hours(1),

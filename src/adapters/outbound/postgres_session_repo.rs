@@ -21,7 +21,6 @@ impl PostgresSessionRepo {
 #[async_trait]
 impl SessionRepository for PostgresSessionRepo {
     async fn create(&self, session: NewSession) -> Result<Session, AuthError> {
-        let id = Uuid::now_v7();
         let now = Utc::now();
 
         let row = sqlx::query_as::<_, SessionRow>(
@@ -29,7 +28,7 @@ impl SessionRepository for PostgresSessionRepo {
             VALUES ($1, $2, $3, $4, $5, $6)
             RETURNING id, user_id, refresh_token_hash, expires_at, is_active, created_at"#,
         )
-        .bind(id)
+        .bind(session.id)
         .bind(session.user_id)
         .bind(&session.refresh_token_hash)
         .bind(session.expires_at)

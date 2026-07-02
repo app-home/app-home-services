@@ -52,8 +52,8 @@ pub async fn refresh_token(
     let refresh_hash = bcrypt::hash(&token_pair.refresh_token, bcrypt::DEFAULT_COST)
         .map_err(|_| AuthError::TokenGenerationFailed)?;
 
-    let new_session = NewSession::new(claims.sub, refresh_hash, expires_at);
-    let _session = session_repo.create(new_session).await?;
+    let new_session = NewSession::new(new_session_id, claims.sub, refresh_hash, expires_at);
+    session_repo.create(new_session).await?;
 
     Ok(RefreshResult {
         user_id: claims.sub,

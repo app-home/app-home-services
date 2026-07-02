@@ -4,6 +4,7 @@ use crate::application::ports::auth_provider::AuthProvider;
 use crate::application::ports::jwt_service::JwtService;
 use crate::application::ports::session_repository::SessionRepository;
 use crate::application::ports::user_repository::UserRepository;
+use crate::domain::entities::session::NewSession;
 use crate::domain::entities::user::{NewUser, User};
 use crate::domain::errors::AuthError;
 
@@ -52,9 +53,8 @@ pub async fn login_with_google(
     let refresh_hash = bcrypt::hash(&token_pair.refresh_token, bcrypt::DEFAULT_COST)
         .map_err(|_| AuthError::TokenGenerationFailed)?;
 
-    let new_session =
-        crate::domain::entities::session::NewSession::new(user.id, refresh_hash, expires_at);
-    let _session = session_repo.create(new_session).await?;
+    let new_session = NewSession::new(session_id, user.id, refresh_hash, expires_at);
+    session_repo.create(new_session).await?;
 
     Ok(LoginWithGoogleResult {
         user,

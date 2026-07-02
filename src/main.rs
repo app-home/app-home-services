@@ -1,3 +1,5 @@
+use std::net::SocketAddr;
+
 use axum::routing::post;
 
 use app_home_services::AppState;
@@ -32,6 +34,17 @@ async fn main() {
     if let Err(e) = seed_default_user(&pool, &settings).await {
         tracing::error!(error = %e, "Default user check failed");
         std::process::exit(1);
+    }
+
+    if settings.trusted_proxy_ips.is_empty() {
+        tracing::info!(
+            "TRUSTED_PROXY_IPS not configured: X-Forwarded-For/X-Real-IP will be ignored, rate limiting uses the direct peer address"
+        );
+    } else {
+        tracing::info!(
+            trusted_proxies = ?settings.trusted_proxy_ips,
+            "Trusted reverse proxies configured"
+        );
     }
 
     let user_repo = PostgresUserRepo::new(pool.clone());
@@ -96,7 +109,15 @@ async fn main() {
         .await
         .expect("Failed to bind address");
 
-    axum::serve(listener, app).await.expect("Server error");
+    // `into_make_service_with_connect_info` exposes the real TCP peer address to
+    // extractors (`ConnectInfo<SocketAddr>`), which `login_password_handler` uses to
+    // safely resolve the client IP for rate limiting (see `resolve_client_ip`).
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("Server error");
 }
 
 async fn health_check() -> axum::Json<serde_json::Value> {

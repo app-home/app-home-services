@@ -1,3 +1,5 @@
+use std::net::IpAddr;
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub database_url: String,
@@ -13,6 +15,11 @@ pub struct Settings {
     pub access_token_expiry_minutes: i64,
     pub refresh_token_expiry_days: i64,
     pub cors_allowed_origins: String,
+    /// IP addresses of reverse proxies/load balancers that are trusted to set
+    /// `X-Forwarded-For` / `X-Real-IP`. Requests whose direct TCP peer is not in this
+    /// list will have those headers ignored entirely, and the real peer address will
+    /// be used instead (see `adapters::inbound::login_routes::resolve_client_ip`).
+    pub trusted_proxy_ips: Vec<IpAddr>,
 }
 
 impl Settings {
@@ -52,6 +59,13 @@ impl Settings {
                 .map_err(|_| "REFRESH_TOKEN_EXPIRY_DAYS must be a valid number".to_string())?,
             cors_allowed_origins: std::env::var("CORS_ALLOWED_ORIGINS")
                 .unwrap_or_else(|_| String::new()),
+            trusted_proxy_ips: std::env::var("TRUSTED_PROXY_IPS")
+                .unwrap_or_else(|_| String::new())
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| s.parse::<IpAddr>().ok())
+                .collect(),
         })
     }
 }

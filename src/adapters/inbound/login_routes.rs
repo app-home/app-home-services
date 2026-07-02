@@ -1,6 +1,11 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    extract::{ConnectInfo, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use serde::Deserialize;
 
 use crate::AppState;
@@ -15,7 +20,23 @@ pub struct PasswordLoginRequest {
     password: String,
 }
 
-fn client_ip(headers: &axum::http::HeaderMap) -> IpAddr {
+/// Resolves the client IP to use for rate limiting.
+///
+/// `X-Forwarded-For` / `X-Real-IP` are only trusted when the direct TCP peer
+/// (`peer_ip`) is itself a known, trusted reverse proxy. Any client can set these
+/// headers to an arbitrary value, so honoring them unconditionally would let an
+/// attacker bypass rate limiting entirely by sending a different fake IP on every
+/// request. When the peer is not in `trusted_proxies`, the headers are ignored and
+/// the real peer address is used instead.
+pub fn resolve_client_ip(
+    peer_ip: IpAddr,
+    headers: &axum::http::HeaderMap,
+    trusted_proxies: &[IpAddr],
+) -> IpAddr {
+    if !trusted_proxies.contains(&peer_ip) {
+        return peer_ip;
+    }
+
     if let Some(value) = headers
         .get("X-Forwarded-For")
         .and_then(|v| v.to_str().ok())
@@ -24,6 +45,7 @@ fn client_ip(headers: &axum::http::HeaderMap) -> IpAddr {
     {
         return value;
     }
+
     if let Some(value) = headers
         .get("X-Real-IP")
         .and_then(|v| v.to_str().ok())
@@ -31,15 +53,17 @@ fn client_ip(headers: &axum::http::HeaderMap) -> IpAddr {
     {
         return value;
     }
-    IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))
+
+    peer_ip
 }
 
 pub async fn login_password_handler(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     Json(req): Json<PasswordLoginRequest>,
 ) -> impl IntoResponse {
-    let ip = client_ip(&headers);
+    let ip = resolve_client_ip(peer.ip(), &headers, &state.settings.trusted_proxy_ips);
 
     {
         let mut limiter = state.rate_limiter.lock().unwrap();

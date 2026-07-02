@@ -35,7 +35,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 ## Environment Variables
 
 | Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
+| ---------- | ---------- | --------- | ------------- |
 | `DATABASE_URL` | Yes | — | PostgreSQL connection string |
 | `SERVER_HOST` | No | `0.0.0.0` | HTTP server bind host |
 | `SERVER_PORT` | No | `3000` | HTTP server bind port |
@@ -55,7 +55,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 ### Authentication
 
 | Method | Path | Auth | Description |
-|--------|------|------|-------------|
+| -------- | ------ | ------ | ------------- |
 | POST | `/api/auth/login/password` | No | Login with username/password |
 | POST | `/api/auth/login/google` | No | Login with Google OAuth ID token |
 | POST | `/api/auth/logout` | Bearer | Invalidate a session |
@@ -64,7 +64,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 ### System
 
 | Method | Path | Auth | Description |
-|--------|------|------|-------------|
+| -------- | ------ | ------ | ------------- |
 | GET | `/api/health` | No | Health check |
 
 ### Login Responses
@@ -115,6 +115,7 @@ The session is marked inactive (one-way transition). Subsequent refresh attempts
 ```
 
 Each refresh:
+
 1. Validates the old refresh token
 2. Verifies the session is active and not expired
 3. Invalidates the old session
@@ -133,31 +134,31 @@ Cross-origin requests are restricted to origins listed in `CORS_ALLOWED_ORIGINS`
 
 The project follows **Hexagonal Architecture (Ports & Adapters)**:
 
-```
-                     ┌──────────┐
-                     │  Axum    │  (inbound adapters — HTTP handlers)
-                     │ Routes   │
-                     └────┬─────┘
-                          │
-                ┌─────────▼─────────┐
-                │   Use Cases       │  (application layer — orchestration)
-                └────┬─────────┬────┘
-                     │         │
-            ┌────────▼──┐  ┌──▼────────┐
-            │ Ports     │  │ Ports     │  (application/ports — traits)
-            │ (traits)  │  │ (traits)  │
-            └────┬──────┘  └─────┬─────┘
-                 │               │
-       ┌─────────▼──────┐  ┌────▼──────────┐
-       │ PostgresRepos  │  │ JwtService    │  (outbound adapters)
-       │ RateLimiter    │  │ GoogleAuth    │
-       └────────────────┘  └───────────────┘
+```text
+                      ┌──────────┐
+                      │  Axum    │  (inbound adapters — HTTP handlers)
+                      │ Routes   │
+                      └────┬─────┘
+                           │
+                 ┌─────────▼─────────┐
+                 │   Use Cases       │  (application layer — orchestration)
+                 └────┬─────────┬────┘
+                      │         │
+             ┌────────▼──┐  ┌──▼────────┐
+             │ Ports     │  │ Ports     │  (application/ports — traits)
+             │ (traits)  │  │ (traits)  │
+             └────┬──────┘  └─────┬─────┘
+                  │               │
+        ┌─────────▼──────┐  ┌────▼──────────┐
+        │ PostgresRepos  │  │ JwtService    │  (outbound adapters)
+        │ RateLimiter    │  │ GoogleAuth    │
+        └────────────────┘  └───────────────┘
 ```
 
 ### Key Modules
 
 | Layer | Path | Description |
-|-------|------|-------------|
+| ------- | ------ | ------------- |
 | Domain | `src/domain/entities/` | `User`, `Session`, `UserAction` entities |
 | Domain | `src/domain/errors.rs` | `AuthError` enum with typed error variants |
 | Application | `src/application/ports/` | Traits: `UserRepository`, `SessionRepository`, `JwtService`, `RateLimiter`, `AuthProvider` |
@@ -169,7 +170,7 @@ The project follows **Hexagonal Architecture (Ports & Adapters)**:
 ## Migrations
 
 | File | Description |
-|------|-------------|
+| ------ | ------------- |
 | `001_create_users_table.sql` | Users table with local + Google auth support |
 | `002_create_user_actions_table.sql` | Audit trail for auth events |
 | `003_create_sessions_table.sql` | Sessions table for JWT refresh token management |
