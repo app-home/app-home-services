@@ -9,7 +9,6 @@ use axum::{
 use serde::Deserialize;
 
 use crate::AppState;
-use crate::application::ports::rate_limiter::RateLimiter;
 use crate::application::use_cases::login_with_password;
 use crate::application::use_cases::record_audit_entry;
 use crate::domain::errors::AuthError;
