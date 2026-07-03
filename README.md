@@ -6,6 +6,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 
 - Rust 2024 edition (nightly)
 - PostgreSQL 14+
+- Redis (optional, only required for multi-instance deployments -- see Rate Limiting below)
 
 ## Setup
 
@@ -30,7 +31,7 @@ User authentication service supporting local password login, Google OAuth, sessi
    cargo run
    ```
 
-   Migrations are applied automatically on startup (via `sqlx::migrate!`). On first run, the default local user is also seeded. The process aborts with a clear error if the database is unreachable.
+   Migrations are applied automatically on startup (via `sqlx::migrate!`). On first run, the default local user is also seeded. The process aborts with a clear error if the database is unreachable, if the initial default-user check fails, or (when `REDIS_URL` is set) if Redis is unreachable.
 
 ## Environment Variables
 
@@ -47,8 +48,10 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `ACCESS_TOKEN_EXPIRY_MINUTES` | No | `15` | Access token lifetime in minutes |
 | `REFRESH_TOKEN_EXPIRY_DAYS` | No | `7` | Refresh token lifetime in days |
 | `RATE_LIMIT_MAX_ATTEMPTS` | No | `10` | Max failed login attempts per IP within the time window |
-| `RATE_LIMIT_WINDOW_SECONDS` | No | `300` | Rate limit sliding window in seconds (default: 5 min) |
+| `RATE_LIMIT_WINDOW_SECONDS` | No | `300` | Rate limit window in seconds (default: 5 min) |
+| `REDIS_URL` | No | — | Redis URL for shared rate-limit counters; empty = in-memory (single instance only) |
 | `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated allowed origins; empty = same-origin only |
+| `TRUSTED_PROXY_IPS` | No | — | Comma-separated reverse proxy IPs trusted to set X-Forwarded-For/X-Real-IP; empty = never trusted |
 
 ## API Endpoints
 
@@ -124,7 +127,14 @@ Each refresh:
 
 ### Rate Limiting
 
-Failed login attempts are tracked per IP address using an in-memory sliding window (default: 10 attempts per 5 minutes). When the limit is exceeded, the endpoint returns `429 Too Many Requests`. A successful login resets the counter for that IP.
+Failed login attempts are tracked per IP address using a sliding window (default: 10 attempts per 5 minutes). When the limit is exceeded, the endpoint returns `429 Too Many Requests`. A successful login resets the counter for that IP.
+
+Only requests arriving from an IP listed in `TRUSTED_PROXY_IPS` may use `X-Forwarded-For`/`X-Real-IP` to identify the client; otherwise the real TCP peer address is used, since forwarded headers can be spoofed by any client.
+
+The rate limiter backend is chosen automatically at startup:
+
+- **`REDIS_URL` unset (default):** in-memory counters (`MemoryRateLimiter`). Only safe for a single running instance -- counters are lost on restart and are not shared with other replicas.
+- **`REDIS_URL` set:** Redis-backed counters (`RedisRateLimiter`), incremented atomically via a Lua script. Counters are shared across every instance connected to the same Redis, so the limit stays effective when the service is scaled horizontally or restarted. If Redis is temporarily unreachable, the limiter fails open (allows the request) and logs an error, rather than blocking every login.
 
 ### CORS
 
@@ -164,7 +174,7 @@ The project follows **Hexagonal Architecture (Ports & Adapters)**:
 | Application | `src/application/ports/` | Traits: `UserRepository`, `SessionRepository`, `JwtService`, `RateLimiter`, `AuthProvider` |
 | Application | `src/application/use_cases/` | `login_with_password`, `login_with_google`, `logout`, `refresh_token`, `record_audit_entry` |
 | Adapters | `src/adapters/inbound/` | HTTP handlers + auth middleware |
-| Adapters | `src/adapters/outbound/` | `PostgresUserRepo`, `PostgresSessionRepo`, `JwtServiceImpl`, `MemoryRateLimiter`, `GoogleAuthProvider` |
+| Adapters | `src/adapters/outbound/` | `PostgresUserRepo`, `PostgresSessionRepo`, `JwtServiceImpl`, `MemoryRateLimiter`, `RedisRateLimiter`, `GoogleAuthProvider` |
 | Infrastructure | `src/infrastructure/` | Config, database pool, telemetry |
 
 ## Migrations
@@ -181,15 +191,18 @@ Migrations run automatically on startup.
 ## Testing
 
 ```bash
-# Run all unit tests (no database required)
+# Run all unit tests (no database or Redis required)
 cargo test
 
 # Run integration tests (requires running PostgreSQL + server)
 cargo test -- --ignored
+
+# Run Redis integration tests specifically (requires a running Redis)
+REDIS_URL=redis://127.0.0.1:6379 cargo test --test integration -- --ignored redis_rate_limit
 ```
 
-- **35 unit tests**: Session entity, JWT service, rate limiter, user action audit, password hashing
-- **21 integration tests** (ignored by default): Login, logout, refresh, CORS, rate limiting, startup hardening
+- **Unit tests**: Session entity, JWT service, rate limiter (in-memory), trusted-proxy IP resolution, user action audit, password hashing
+- **Integration tests** (ignored by default): Login, logout, refresh, CORS, rate limiting, startup hardening, Redis-backed rate limiting
 
 ## Security
 
@@ -197,8 +210,9 @@ cargo test -- --ignored
 - Refresh tokens hashed with bcrypt before storage
 - JWT tokens signed with HMAC-SHA256
 - No plain-text passwords in logs (structured field logging)
-- Rate limiting per IP to prevent brute-force attacks
+- Rate limiting per IP to prevent brute-force attacks, backed by Redis for multi-instance deployments (see Rate Limiting above)
+- `X-Forwarded-For`/`X-Real-IP` only trusted from configured reverse proxies (`TRUSTED_PROXY_IPS`), preventing rate-limit bypass via header spoofing
 - Uniform 50 ms delay on all login failures to prevent timing attacks
 - CORS denied by default (same-origin only)
-- Startup aborts on database connection failure
+- Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
 - Session state transitions are one-way (active → inactive)
