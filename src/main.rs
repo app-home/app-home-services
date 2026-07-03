@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::routing::post;
 
@@ -12,6 +13,8 @@ use app_home_services::adapters::outbound::jwt_service::JwtServiceImpl;
 use app_home_services::adapters::outbound::memory_rate_limiter::MemoryRateLimiter;
 use app_home_services::adapters::outbound::postgres_session_repo::PostgresSessionRepo;
 use app_home_services::adapters::outbound::postgres_user_repo::PostgresUserRepo;
+use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
+use app_home_services::application::ports::rate_limiter::RateLimiter;
 use app_home_services::infrastructure::config::settings::Settings;
 
 #[tokio::main]
@@ -55,10 +58,32 @@ async fn main() {
         settings.access_token_expiry_minutes,
         settings.refresh_token_expiry_days,
     );
-    let rate_limiter = MemoryRateLimiter::new(
-        settings.rate_limit_max_attempts,
-        settings.rate_limit_window_seconds,
-    );
+
+    // Rate limiter backend: Redis when REDIS_URL is configured (required for correct
+    // rate limiting when running more than one instance of this service), otherwise
+    // an in-memory limiter (single instance only -- see MemoryRateLimiter's docs).
+    let rate_limiter: Arc<dyn RateLimiter> = match &settings.redis_url {
+        Some(redis_url) => {
+            let limiter = RedisRateLimiter::connect(
+                redis_url,
+                settings.rate_limit_max_attempts,
+                settings.rate_limit_window_seconds,
+            )
+            .await
+            .expect("Failed to connect to Redis for rate limiting");
+            tracing::info!("Rate limiting backend: Redis (shared across instances)");
+            Arc::new(limiter)
+        }
+        None => {
+            tracing::info!(
+                "Rate limiting backend: in-memory (REDIS_URL not set -- only safe for a single instance)"
+            );
+            Arc::new(MemoryRateLimiter::new(
+                settings.rate_limit_max_attempts,
+                settings.rate_limit_window_seconds,
+            ))
+        }
+    };
 
     let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
