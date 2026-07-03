@@ -127,14 +127,16 @@ Each refresh:
 
 ### Rate Limiting
 
-Failed login attempts are tracked per IP address using a sliding window (default: 10 attempts per 5 minutes). When the limit is exceeded, the endpoint returns `429 Too Many Requests`. A successful login resets the counter for that IP.
+Both `/api/auth/login/password` and `/api/auth/refresh` are rate limited per IP address using a sliding window (default: 10 attempts per 5 minutes each). When the limit is exceeded, the endpoint returns `429 Too Many Requests`. A successful login/refresh resets the counter for that IP.
+
+Login and refresh are tracked with **independent counters** (separate `MemoryRateLimiter` instances, or separate Redis key namespaces `ratelimit:login:*` / `ratelimit:refresh:*` when `REDIS_URL` is set) -- exhausting one endpoint's limit for an IP has no effect on the other.
 
 Only requests arriving from an IP listed in `TRUSTED_PROXY_IPS` may use `X-Forwarded-For`/`X-Real-IP` to identify the client; otherwise the real TCP peer address is used, since forwarded headers can be spoofed by any client.
 
 The rate limiter backend is chosen automatically at startup:
 
 - **`REDIS_URL` unset (default):** in-memory counters (`MemoryRateLimiter`). Only safe for a single running instance -- counters are lost on restart and are not shared with other replicas.
-- **`REDIS_URL` set:** Redis-backed counters (`RedisRateLimiter`), incremented atomically via a Lua script. Counters are shared across every instance connected to the same Redis, so the limit stays effective when the service is scaled horizontally or restarted. If Redis is temporarily unreachable, the limiter fails open (allows the request) and logs an error, rather than blocking every login.
+- **`REDIS_URL` set:** Redis-backed counters (`RedisRateLimiter`), incremented atomically via a Lua script. Counters are shared across every instance connected to the same Redis, so the limit stays effective when the service is scaled horizontally or restarted. If Redis is temporarily unreachable, the limiter fails open (allows the request) and logs an error, rather than blocking every login/refresh.
 
 ### CORS
 
@@ -202,7 +204,7 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test --test integration -- --ignored redi
 ```
 
 - **Unit tests**: Session entity, JWT service, rate limiter (in-memory), trusted-proxy IP resolution, user action audit, password hashing
-- **Integration tests** (ignored by default): Login, logout, refresh, CORS, rate limiting, startup hardening, Redis-backed rate limiting
+- **Integration tests** (ignored by default): Login, logout, refresh, refresh rate limiting, CORS, rate limiting, startup hardening, Redis-backed rate limiting
 
 ## Security
 
@@ -210,7 +212,7 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test --test integration -- --ignored redi
 - Refresh tokens hashed with bcrypt before storage
 - JWT tokens signed with HMAC-SHA256
 - No plain-text passwords in logs (structured field logging)
-- Rate limiting per IP to prevent brute-force attacks, backed by Redis for multi-instance deployments (see Rate Limiting above)
+- Rate limiting per IP on both login and refresh (independent counters) to prevent brute-force attacks, backed by Redis for multi-instance deployments (see Rate Limiting above)
 - `X-Forwarded-For`/`X-Real-IP` only trusted from configured reverse proxies (`TRUSTED_PROXY_IPS`), preventing rate-limit bypass via header spoofing
 - Uniform 50 ms delay on all login failures to prevent timing attacks
 - CORS denied by default (same-origin only)
