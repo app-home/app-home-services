@@ -18,10 +18,16 @@ pub struct AppState {
     pub session_repo: PostgresSessionRepo,
     pub auth_provider: GoogleAuthProvider,
     pub jwt_service: JwtServiceImpl,
-    /// Rate limiter backend, chosen at startup based on configuration: `RedisRateLimiter`
-    /// when `REDIS_URL` is set (safe for multi-instance deployments), otherwise
-    /// `MemoryRateLimiter` (single-instance only). See `main.rs`.
+    /// Rate limiter for `/api/auth/login/password`. Backend chosen at startup based on
+    /// configuration: `RedisRateLimiter` when `REDIS_URL` is set (safe for
+    /// multi-instance deployments), otherwise `MemoryRateLimiter` (single-instance
+    /// only). See `main.rs`.
     pub rate_limiter: Arc<dyn RateLimiter>,
+    /// Rate limiter for `/api/auth/refresh`, kept as a separate instance (and, for the
+    /// Redis backend, a separate key namespace) from `rate_limiter` so refresh
+    /// attempts and login attempts from the same IP don't share -- and therefore
+    /// can't exhaust -- each other's attempt budget.
+    pub refresh_rate_limiter: Arc<dyn RateLimiter>,
     pub settings: Settings,
 }
 
@@ -32,6 +38,7 @@ impl AppState {
         auth_provider: GoogleAuthProvider,
         jwt_service: JwtServiceImpl,
         rate_limiter: Arc<dyn RateLimiter>,
+        refresh_rate_limiter: Arc<dyn RateLimiter>,
         settings: Settings,
     ) -> Self {
         Self {
@@ -40,6 +47,7 @@ impl AppState {
             auth_provider,
             jwt_service,
             rate_limiter,
+            refresh_rate_limiter,
             settings,
         }
     }
