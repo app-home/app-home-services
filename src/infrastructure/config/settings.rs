@@ -20,6 +20,11 @@ pub struct Settings {
     /// list will have those headers ignored entirely, and the real peer address will
     /// be used instead (see `adapters::inbound::login_routes::resolve_client_ip`).
     pub trusted_proxy_ips: Vec<IpAddr>,
+    /// Optional Redis connection URL (e.g. `redis://127.0.0.1:6379`). When set, login
+    /// rate limiting uses `RedisRateLimiter` so counters are shared across every
+    /// instance of the service. When unset, rate limiting falls back to
+    /// `MemoryRateLimiter`, which is only effective for a single-instance deployment.
+    pub redis_url: Option<String>,
 }
 
 impl Settings {
@@ -66,6 +71,9 @@ impl Settings {
                 .filter(|s| !s.is_empty())
                 .filter_map(|s| s.parse::<IpAddr>().ok())
                 .collect(),
+            redis_url: std::env::var("REDIS_URL")
+                .ok()
+                .filter(|s| !s.trim().is_empty()),
         })
     }
 }

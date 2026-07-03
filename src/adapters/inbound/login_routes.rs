@@ -9,7 +9,6 @@ use axum::{
 use serde::Deserialize;
 
 use crate::AppState;
-use crate::application::ports::rate_limiter::RateLimiter;
 use crate::application::use_cases::login_with_password;
 use crate::application::use_cases::record_audit_entry;
 use crate::domain::errors::AuthError;
@@ -65,19 +64,16 @@ pub async fn login_password_handler(
 ) -> impl IntoResponse {
     let ip = resolve_client_ip(peer.ip(), &headers, &state.settings.trusted_proxy_ips);
 
-    {
-        let mut limiter = state.rate_limiter.lock().unwrap();
-        if !limiter.check(ip) {
-            tracing::warn!(%ip, "Rate limit exceeded");
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(
-                    serde_json::json!({"error": "Too many login attempts. Please try again later."}),
-                ),
-            );
-        }
-        limiter.record_attempt(ip);
+    if !state.rate_limiter.check(ip).await {
+        tracing::warn!(%ip, "Rate limit exceeded");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(
+                serde_json::json!({"error": "Too many login attempts. Please try again later."}),
+            ),
+        );
     }
+    state.rate_limiter.record_attempt(ip).await;
 
     if req.username.is_empty() || req.password.is_empty() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -100,10 +96,7 @@ pub async fn login_password_handler(
         Ok(result) => {
             tracing::info!(user_id = %result.user.id, method = "password", "Login successful");
 
-            {
-                let mut limiter = state.rate_limiter.lock().unwrap();
-                limiter.reset(ip);
-            }
+            state.rate_limiter.reset(ip).await;
 
             if let Err(e) = record_audit_entry::record_audit_entry(
                 &state.user_repo,

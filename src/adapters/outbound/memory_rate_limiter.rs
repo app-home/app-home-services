@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+use async_trait::async_trait;
 
 use crate::application::ports::rate_limiter::RateLimiter;
 
@@ -10,11 +13,19 @@ struct RateLimitEntry {
     window_start: Instant,
 }
 
-#[derive(Debug, Clone)]
+/// In-memory, single-instance rate limiter.
+///
+/// Counters live only in this process's memory: they are lost on restart and are not
+/// shared with any other instance of the service. This is fine for a single-instance
+/// deployment, but if the service ever runs with more than one replica behind a load
+/// balancer, an attacker can bypass the limit by spreading requests across replicas.
+/// For multi-instance deployments, use `RedisRateLimiter` instead (selected
+/// automatically in `main.rs` when `REDIS_URL` is configured).
+#[derive(Debug)]
 pub struct MemoryRateLimiter {
     max_attempts: u32,
     window_duration: Duration,
-    entries: HashMap<IpAddr, RateLimitEntry>,
+    entries: Mutex<HashMap<IpAddr, RateLimitEntry>>,
 }
 
 impl MemoryRateLimiter {
@@ -22,22 +33,24 @@ impl MemoryRateLimiter {
         Self {
             max_attempts,
             window_duration: Duration::from_secs(window_seconds),
-            entries: HashMap::new(),
+            entries: Mutex::new(HashMap::new()),
         }
     }
 
-    fn clean_expired(&mut self) {
+    fn clean_expired(&self, entries: &mut HashMap<IpAddr, RateLimitEntry>) {
         let now = Instant::now();
-        self.entries
-            .retain(|_, entry| now.duration_since(entry.window_start) < self.window_duration);
+        let window = self.window_duration;
+        entries.retain(|_, entry| now.duration_since(entry.window_start) < window);
     }
 }
 
+#[async_trait]
 impl RateLimiter for MemoryRateLimiter {
-    fn check(&mut self, ip: IpAddr) -> bool {
-        self.clean_expired();
+    async fn check(&self, ip: IpAddr) -> bool {
+        let mut entries = self.entries.lock().unwrap();
+        self.clean_expired(&mut entries);
 
-        match self.entries.get(&ip) {
+        match entries.get(&ip) {
             Some(entry) => {
                 let elapsed = Instant::now().duration_since(entry.window_start);
                 if elapsed >= self.window_duration {
@@ -50,10 +63,11 @@ impl RateLimiter for MemoryRateLimiter {
         }
     }
 
-    fn record_attempt(&mut self, ip: IpAddr) {
+    async fn record_attempt(&self, ip: IpAddr) {
+        let mut entries = self.entries.lock().unwrap();
         let now = Instant::now();
 
-        let entry = self.entries.entry(ip).or_insert(RateLimitEntry {
+        let entry = entries.entry(ip).or_insert(RateLimitEntry {
             attempts: 0,
             window_start: now,
         });
@@ -67,8 +81,9 @@ impl RateLimiter for MemoryRateLimiter {
         }
     }
 
-    fn remaining_attempts(&self, ip: IpAddr) -> u32 {
-        match self.entries.get(&ip) {
+    async fn remaining_attempts(&self, ip: IpAddr) -> u32 {
+        let entries = self.entries.lock().unwrap();
+        match entries.get(&ip) {
             Some(entry) => {
                 let elapsed = Instant::now().duration_since(entry.window_start);
                 if elapsed >= self.window_duration {
@@ -81,7 +96,8 @@ impl RateLimiter for MemoryRateLimiter {
         }
     }
 
-    fn reset(&mut self, ip: IpAddr) {
-        self.entries.remove(&ip);
+    async fn reset(&self, ip: IpAddr) {
+        let mut entries = self.entries.lock().unwrap();
+        entries.remove(&ip);
     }
 }

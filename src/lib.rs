@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 pub mod adapters;
 pub mod application;
@@ -7,9 +7,9 @@ pub mod infrastructure;
 
 use adapters::outbound::google_auth_provider::GoogleAuthProvider;
 use adapters::outbound::jwt_service::JwtServiceImpl;
-use adapters::outbound::memory_rate_limiter::MemoryRateLimiter;
 use adapters::outbound::postgres_session_repo::PostgresSessionRepo;
 use adapters::outbound::postgres_user_repo::PostgresUserRepo;
+use application::ports::rate_limiter::RateLimiter;
 use infrastructure::config::settings::Settings;
 
 #[derive(Clone)]
@@ -18,7 +18,10 @@ pub struct AppState {
     pub session_repo: PostgresSessionRepo,
     pub auth_provider: GoogleAuthProvider,
     pub jwt_service: JwtServiceImpl,
-    pub rate_limiter: Arc<Mutex<MemoryRateLimiter>>,
+    /// Rate limiter backend, chosen at startup based on configuration: `RedisRateLimiter`
+    /// when `REDIS_URL` is set (safe for multi-instance deployments), otherwise
+    /// `MemoryRateLimiter` (single-instance only). See `main.rs`.
+    pub rate_limiter: Arc<dyn RateLimiter>,
     pub settings: Settings,
 }
 
@@ -28,7 +31,7 @@ impl AppState {
         session_repo: PostgresSessionRepo,
         auth_provider: GoogleAuthProvider,
         jwt_service: JwtServiceImpl,
-        rate_limiter: MemoryRateLimiter,
+        rate_limiter: Arc<dyn RateLimiter>,
         settings: Settings,
     ) -> Self {
         Self {
@@ -36,7 +39,7 @@ impl AppState {
             session_repo,
             auth_provider,
             jwt_service,
-            rate_limiter: Arc::new(Mutex::new(rate_limiter)),
+            rate_limiter,
             settings,
         }
     }
