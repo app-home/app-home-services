@@ -17,7 +17,7 @@ fn test_ip(last_octet: u8) -> IpAddr {
 async fn connect() -> RedisRateLimiter {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    RedisRateLimiter::connect(&redis_url, 3, 60)
+    RedisRateLimiter::connect(&redis_url, 3, 60, "test")
         .await
         .expect("Failed to connect to Redis -- is it running and REDIS_URL correct?")
 }
@@ -80,4 +80,32 @@ async fn test_redis_rate_limiter_counters_shared_across_instances() {
 
     assert_eq!(limiter_a.remaining_attempts(ip).await, 1);
     assert_eq!(limiter_b.remaining_attempts(ip).await, 1);
+}
+
+#[tokio::test]
+#[ignore]
+async fn test_redis_rate_limiter_different_prefixes_are_isolated() {
+    // Login and refresh use separate key_prefix values in production (see main.rs).
+    // Two limiters with different prefixes over the same IP must not share a counter.
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    let login_limiter = RedisRateLimiter::connect(&redis_url, 3, 60, "test-login")
+        .await
+        .expect("Failed to connect to Redis");
+    let refresh_limiter = RedisRateLimiter::connect(&redis_url, 3, 60, "test-refresh")
+        .await
+        .expect("Failed to connect to Redis");
+    let ip = test_ip(5);
+    login_limiter.reset(ip).await;
+    refresh_limiter.reset(ip).await;
+
+    for _ in 0..3 {
+        login_limiter.record_attempt(ip).await;
+    }
+
+    assert!(!login_limiter.check(ip).await);
+    assert!(
+        refresh_limiter.check(ip).await,
+        "a different key_prefix must not share the exhausted counter"
+    );
 }
