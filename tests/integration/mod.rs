@@ -5,5 +5,6 @@ mod login_password_test;
 mod logout_test;
 mod rate_limit_test;
 mod redis_rate_limit_test;
+mod refresh_rate_limit_test;
 mod refresh_test;
 mod startup_test;

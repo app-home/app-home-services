@@ -1,7 +1,15 @@
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use std::net::{IpAddr, SocketAddr};
+
+use axum::{
+    Json,
+    extract::{ConnectInfo, State},
+    http::StatusCode,
+    response::IntoResponse,
+};
 use serde::Deserialize;
 
 use crate::AppState;
+use crate::adapters::inbound::login_routes::resolve_client_ip;
 use crate::application::use_cases::record_audit_entry;
 use crate::application::use_cases::refresh_token;
 use crate::domain::errors::AuthError;
@@ -13,8 +21,23 @@ pub struct RefreshTokenRequest {
 
 pub async fn refresh_token_handler(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<RefreshTokenRequest>,
 ) -> impl IntoResponse {
+    let ip: IpAddr = resolve_client_ip(peer.ip(), &headers, &state.settings.trusted_proxy_ips);
+
+    if !state.refresh_rate_limiter.check(ip).await {
+        tracing::warn!(%ip, "Refresh rate limit exceeded");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(
+                serde_json::json!({"error": "Too many refresh attempts. Please try again later."}),
+            ),
+        );
+    }
+    state.refresh_rate_limiter.record_attempt(ip).await;
+
     if req.refresh_token.is_empty() {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -32,6 +55,8 @@ pub async fn refresh_token_handler(
     .await
     {
         Ok(result) => {
+            state.refresh_rate_limiter.reset(ip).await;
+
             if let Err(e) = record_audit_entry::record_audit_entry(
                 &state.user_repo,
                 result.user_id,

@@ -24,27 +24,35 @@ return current
 /// instance of the service connected to the same Redis deployment, so the rate limit
 /// stays effective when the service is scaled horizontally or restarted.
 ///
+/// `key_prefix` scopes the counters to a specific protected action (e.g. `"login"` or
+/// `"refresh"`), so two different endpoints rate-limited independently never share a
+/// counter -- a burst of refresh attempts from an IP must not eat into that same IP's
+/// login attempt budget, and vice versa.
+///
 /// On Redis errors (e.g. connection dropped), this implementation fails open --
 /// `check` returns `true` and `remaining_attempts` returns the max -- rather than
-/// blocking every login because Redis is briefly unavailable. Each failure is logged
-/// at `error` level so the outage is visible; `ConnectionManager` also reconnects
-/// automatically in the background.
+/// blocking every request because Redis is briefly unavailable. Each failure is
+/// logged at `error` level so the outage is visible; `ConnectionManager` also
+/// reconnects automatically in the background.
 #[derive(Clone)]
 pub struct RedisRateLimiter {
     conn: ConnectionManager,
     max_attempts: u32,
     window_seconds: u64,
+    key_prefix: String,
 }
 
 impl RedisRateLimiter {
     /// Connects to Redis and returns a limiter with the given attempt budget and
-    /// window. Fails fast (returning an error) if the initial connection cannot be
-    /// established, so a misconfigured `REDIS_URL` is caught at startup rather than
-    /// silently degrading rate limiting later.
+    /// window, scoped under `key_prefix` (e.g. `"login"`, `"refresh"`). Fails fast
+    /// (returning an error) if the initial connection cannot be established, so a
+    /// misconfigured `REDIS_URL` is caught at startup rather than silently degrading
+    /// rate limiting later.
     pub async fn connect(
         redis_url: &str,
         max_attempts: u32,
         window_seconds: u64,
+        key_prefix: impl Into<String>,
     ) -> redis::RedisResult<Self> {
         let client = redis::Client::open(redis_url)?;
         let conn = client.get_connection_manager().await?;
@@ -52,11 +60,12 @@ impl RedisRateLimiter {
             conn,
             max_attempts,
             window_seconds,
+            key_prefix: key_prefix.into(),
         })
     }
 
     fn key(&self, ip: IpAddr) -> String {
-        format!("ratelimit:login:{ip}")
+        format!("ratelimit:{}:{ip}", self.key_prefix)
     }
 }
 
@@ -70,7 +79,11 @@ impl RateLimiter for RedisRateLimiter {
             Ok(Some(count)) => count < self.max_attempts,
             Ok(None) => true,
             Err(e) => {
-                tracing::error!(error = %e, "Redis rate limiter: check failed, failing open");
+                tracing::error!(
+                    error = %e,
+                    scope = %self.key_prefix,
+                    "Redis rate limiter: check failed, failing open"
+                );
                 true
             }
         }
@@ -86,7 +99,11 @@ impl RateLimiter for RedisRateLimiter {
             .await;
 
         if let Err(e) = result {
-            tracing::error!(error = %e, "Redis rate limiter: failed to record attempt");
+            tracing::error!(
+                error = %e,
+                scope = %self.key_prefix,
+                "Redis rate limiter: failed to record attempt"
+            );
         }
     }
 
@@ -100,6 +117,7 @@ impl RateLimiter for RedisRateLimiter {
             Err(e) => {
                 tracing::error!(
                     error = %e,
+                    scope = %self.key_prefix,
                     "Redis rate limiter: remaining_attempts failed, defaulting to max"
                 );
                 self.max_attempts
@@ -112,7 +130,11 @@ impl RateLimiter for RedisRateLimiter {
         let result: redis::RedisResult<i64> = conn.del(self.key(ip)).await;
 
         if let Err(e) = result {
-            tracing::error!(error = %e, "Redis rate limiter: failed to reset counter");
+            tracing::error!(
+                error = %e,
+                scope = %self.key_prefix,
+                "Redis rate limiter: failed to reset counter"
+            );
         }
     }
 }

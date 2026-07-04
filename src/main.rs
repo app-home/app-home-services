@@ -59,31 +59,51 @@ async fn main() {
         settings.refresh_token_expiry_days,
     );
 
-    // Rate limiter backend: Redis when REDIS_URL is configured (required for correct
+    // Rate limiter backends: Redis when REDIS_URL is configured (required for correct
     // rate limiting when running more than one instance of this service), otherwise
-    // an in-memory limiter (single instance only -- see MemoryRateLimiter's docs).
-    let rate_limiter: Arc<dyn RateLimiter> = match &settings.redis_url {
-        Some(redis_url) => {
-            let limiter = RedisRateLimiter::connect(
-                redis_url,
-                settings.rate_limit_max_attempts,
-                settings.rate_limit_window_seconds,
-            )
-            .await
-            .expect("Failed to connect to Redis for rate limiting");
-            tracing::info!("Rate limiting backend: Redis (shared across instances)");
-            Arc::new(limiter)
-        }
-        None => {
-            tracing::info!(
-                "Rate limiting backend: in-memory (REDIS_URL not set -- only safe for a single instance)"
-            );
-            Arc::new(MemoryRateLimiter::new(
-                settings.rate_limit_max_attempts,
-                settings.rate_limit_window_seconds,
-            ))
-        }
-    };
+    // in-memory limiters (single instance only -- see MemoryRateLimiter's docs).
+    //
+    // Login and refresh each get their own limiter instance (and, on Redis, their own
+    // key namespace) so attempts against one endpoint never consume the other's
+    // attempt budget for the same IP.
+    let (rate_limiter, refresh_rate_limiter): (Arc<dyn RateLimiter>, Arc<dyn RateLimiter>) =
+        match &settings.redis_url {
+            Some(redis_url) => {
+                let login_limiter = RedisRateLimiter::connect(
+                    redis_url,
+                    settings.rate_limit_max_attempts,
+                    settings.rate_limit_window_seconds,
+                    "login",
+                )
+                .await
+                .expect("Failed to connect to Redis for login rate limiting");
+                let refresh_limiter = RedisRateLimiter::connect(
+                    redis_url,
+                    settings.rate_limit_max_attempts,
+                    settings.rate_limit_window_seconds,
+                    "refresh",
+                )
+                .await
+                .expect("Failed to connect to Redis for refresh rate limiting");
+                tracing::info!("Rate limiting backend: Redis (shared across instances)");
+                (Arc::new(login_limiter), Arc::new(refresh_limiter))
+            }
+            None => {
+                tracing::info!(
+                    "Rate limiting backend: in-memory (REDIS_URL not set -- only safe for a single instance)"
+                );
+                (
+                    Arc::new(MemoryRateLimiter::new(
+                        settings.rate_limit_max_attempts,
+                        settings.rate_limit_window_seconds,
+                    )),
+                    Arc::new(MemoryRateLimiter::new(
+                        settings.rate_limit_max_attempts,
+                        settings.rate_limit_window_seconds,
+                    )),
+                )
+            }
+        };
 
     let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
@@ -93,6 +113,7 @@ async fn main() {
         auth_provider,
         jwt_service,
         rate_limiter,
+        refresh_rate_limiter,
         settings,
     );
 
@@ -135,8 +156,8 @@ async fn main() {
         .expect("Failed to bind address");
 
     // `into_make_service_with_connect_info` exposes the real TCP peer address to
-    // extractors (`ConnectInfo<SocketAddr>`), which `login_password_handler` uses to
-    // safely resolve the client IP for rate limiting (see `resolve_client_ip`).
+    // extractors (`ConnectInfo<SocketAddr>`), which the login and refresh handlers use
+    // to safely resolve the client IP for rate limiting (see `resolve_client_ip`).
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
