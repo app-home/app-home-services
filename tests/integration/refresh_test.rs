@@ -7,10 +7,27 @@
 // - Set DATABASE_URL and JWT_SECRET environment variables
 // - Run migrations: cargo run
 
+use std::net::{IpAddr, Ipv4Addr};
+
+use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
+use app_home_services::application::ports::rate_limiter::RateLimiter;
+
+/// Deletes the rate-limit counter for 127.0.0.1 in Redis so this test's login
+/// call is not blocked by state left from a previous test.
+async fn reset_rate_limiter() {
+    let redis_url =
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+    if let Ok(limiter) = RedisRateLimiter::connect(&redis_url, 10, 300).await {
+        let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+        limiter.reset(ip).await;
+    }
+}
+
 #[tokio::test]
 #[ignore]
 async fn test_refresh_with_valid_token_returns_new_tokens() {
     let client = reqwest::Client::new();
+    reset_rate_limiter().await;
 
     // First login to get tokens
     let login_resp = client
