@@ -206,6 +206,27 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test --test integration -- --ignored redi
 - **Unit tests**: Session entity, JWT service, rate limiter (in-memory), trusted-proxy IP resolution, user action audit, password hashing
 - **Integration tests** (ignored by default): Login, logout, refresh, refresh rate limiting, CORS, rate limiting, startup hardening, Redis-backed rate limiting
 
+### Podman test environment
+
+A helper script at `scripts/test-with-podman.ps1` automates the full test setup:
+
+- Spins up PostgreSQL and Redis via Podman Compose
+- Runs unit tests (fast, no external dependencies)
+- Builds the server, starts it locally, and waits for the health endpoint
+- Runs all integration tests against the live server
+- Tears down containers and cleans up
+
+Run it from the project root:
+
+```powershell
+.\scripts\test-with-podman.ps1
+.\scripts\test-with-podman.ps1 -IntegrationOnly   # skip unit tests
+.\scripts\test-with-podman.ps1 -UnitOnly           # no containers, unit tests only
+.\scripts\test-with-podman.ps1 -NoTeardown         # keep containers after run
+```
+
+See `Get-Help .\scripts\test-with-podman.ps1` for full details.
+
 ## Security
 
 - Passwords hashed with bcrypt (never stored in plaintext)
