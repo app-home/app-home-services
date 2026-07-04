@@ -2,20 +2,80 @@
 <#
 .SYNOPSIS
     Run tests using Podman for PostgreSQL and Redis dependencies.
+
 .DESCRIPTION
-    Orchestrates a test environment with PostgreSQL + Redis via Podman compose.
-    For integration tests, also starts the app server locally and waits for
-    the health endpoint before running tests.
+    Orchestrates a self-contained test environment using Podman Compose.
+    It spins up PostgreSQL and Redis containers, runs unit tests (fast,
+    no server needed), builds and starts the app server locally, runs the
+    integration tests against it, and tears everything down.
+
+    Prerequisites:
+      - Podman 5+ (install from https://podman.io/docs/installation)
+      - curl.exe (built into Windows 10/11)
+      - Rust toolchain (nightly, same edition as the project)
+
+    Ports used on the host:
+      - 15432 : PostgreSQL (mapped from container port 5432)
+      - 16379 : Redis      (mapped from container port 6379)
+      - 3000  : App server (started locally by the script)
+
+    Environment variables injected for the test run:
+      DATABASE_URL   = postgres://app_home:app_home_test@localhost:15432/app_home_test
+      REDIS_URL      = redis://localhost:16379
+      JWT_SECRET     = test-secret-key-for-podman-test-environment
+      DEFAULT_USER_PASSWORD = test-password
+      CORS_ALLOWED_ORIGINS  = http://localhost:8080
+      RUST_LOG       = info
+
+    Internal flow:
+      1. podman compose up --detach postgres redis
+      2. Wait for both containers to report healthy (via pg_isready / redis-cli ping)
+      3. [Unless -IntegrationOnly] cargo test (unit tests)
+      4. cargo build (debug), copy binary, start server on localhost:3000
+      5. Wait for GET /api/health to return 200
+      6. cargo test -- --ignored --test-threads=1 (integration tests)
+      7. Kill server, remove copied binary
+      8. [Unless -NoTeardown] podman compose down
+
+    The test files call reset_rate_limiters() which connects to Redis and
+    clears both the "login" and "refresh" rate-limit counters for 127.0.0.1,
+    ensuring every test starts with a clean state.
+
 .PARAMETER IntegrationOnly
-    Run only integration tests (starts postgres + redis + server via podman).
+    Skip unit tests, run only integration tests. Still starts postgres + redis
+    containers and the app server.
+
 .PARAMETER UnitOnly
-    Run only unit tests (no containers needed).
+    Run only unit tests. No containers are started -- the script just runs
+    cargo test and exits. Useful for a quick check when you know the
+    integration test environment is already set up.
+
 .PARAMETER NoTeardown
-    Keep containers running after tests finish (useful for debugging).
+    Keep containers and server running after tests finish. Useful for
+    debugging or re-running tests manually. Stop them later with:
+      podman compose -f compose.yaml down
+
 .EXAMPLE
     .\scripts\test-with-podman.ps1
+
+    Full test suite: unit tests + integration tests + automatic cleanup.
+
+.EXAMPLE
     .\scripts\test-with-podman.ps1 -IntegrationOnly
+
+    Only integration tests. Faster iteration when unit tests are already green.
+
+.EXAMPLE
     .\scripts\test-with-podman.ps1 -UnitOnly
+
+    Only unit tests. No containers started, no server needed.
+
+.EXAMPLE
+    .\scripts\test-with-podman.ps1 -NoTeardown
+
+    Run everything but leave containers up. Useful with:
+      .\scripts\test-with-podman.ps1 -IntegrationOnly -NoTeardown
+    Then manually: cargo test -- --ignored --test-threads=1
 #>
 
 param(
