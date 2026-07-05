@@ -12,21 +12,24 @@ use std::net::{IpAddr, Ipv4Addr};
 use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
 use app_home_services::application::ports::rate_limiter::RateLimiter;
 
-/// Deletes the rate-limit counter for the test IP directly in Redis, so the
-/// next HTTP test starts with a clean slate regardless of prior test state.
-async fn reset_rate_limiter() {
+/// Deletes the rate-limit counters for the test IP in both the login and
+/// refresh Redis namespaces, so the next HTTP test starts with a clean slate
+/// regardless of prior test state.
+async fn reset_rate_limiters() {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    if let Ok(limiter) = RedisRateLimiter::connect(&redis_url, 10, 300).await {
-        let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        limiter.reset(ip).await;
+    let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+    for prefix in ["login", "refresh"] {
+        if let Ok(limiter) = RedisRateLimiter::connect(&redis_url, 10, 300, prefix).await {
+            limiter.reset(ip).await;
+        }
     }
 }
 
 #[tokio::test]
 #[ignore]
 async fn test_rate_limit_exceeded_returns_429() {
-    reset_rate_limiter().await;
+    reset_rate_limiters().await;
 
     let client = reqwest::Client::new();
     let max_attempts: u32 = std::env::var("RATE_LIMIT_MAX_ATTEMPTS")
@@ -67,7 +70,7 @@ async fn test_rate_limit_exceeded_returns_429() {
 #[tokio::test]
 #[ignore]
 async fn test_successful_login_resets_rate_limit() {
-    reset_rate_limiter().await;
+    reset_rate_limiters().await;
 
     let client = reqwest::Client::new();
     let max_attempts: u32 = std::env::var("RATE_LIMIT_MAX_ATTEMPTS")

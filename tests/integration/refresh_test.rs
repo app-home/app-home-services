@@ -12,14 +12,16 @@ use std::net::{IpAddr, Ipv4Addr};
 use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
 use app_home_services::application::ports::rate_limiter::RateLimiter;
 
-/// Deletes the rate-limit counter for 127.0.0.1 in Redis so this test's login
-/// call is not blocked by state left from a previous test.
-async fn reset_rate_limiter() {
+/// Deletes the rate-limit counters for 127.0.0.1 in both the login and refresh
+/// Redis namespaces so this test's calls are not blocked by state from a previous test.
+async fn reset_rate_limiters() {
     let redis_url =
         std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
-    if let Ok(limiter) = RedisRateLimiter::connect(&redis_url, 10, 300).await {
-        let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
-        limiter.reset(ip).await;
+    let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+    for prefix in ["login", "refresh"] {
+        if let Ok(limiter) = RedisRateLimiter::connect(&redis_url, 10, 300, prefix).await {
+            limiter.reset(ip).await;
+        }
     }
 }
 
@@ -27,7 +29,7 @@ async fn reset_rate_limiter() {
 #[ignore]
 async fn test_refresh_with_valid_token_returns_new_tokens() {
     let client = reqwest::Client::new();
-    reset_rate_limiter().await;
+    reset_rate_limiters().await;
 
     // First login to get tokens
     let login_resp = client
@@ -63,6 +65,7 @@ async fn test_refresh_with_valid_token_returns_new_tokens() {
 #[tokio::test]
 #[ignore]
 async fn test_refresh_with_invalid_token_returns_401() {
+    reset_rate_limiters().await;
     let client = reqwest::Client::new();
     let resp = client
         .post("http://localhost:3000/api/auth/refresh")
@@ -79,6 +82,7 @@ async fn test_refresh_with_invalid_token_returns_401() {
 #[tokio::test]
 #[ignore]
 async fn test_refresh_empty_token_returns_422() {
+    reset_rate_limiters().await;
     let client = reqwest::Client::new();
     let resp = client
         .post("http://localhost:3000/api/auth/refresh")
