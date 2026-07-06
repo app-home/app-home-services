@@ -95,7 +95,7 @@ if (-not (Get-Command podman -ErrorAction SilentlyContinue)) {
 }
 
 function Invoke-Compose {
-    podman compose -f $ComposeFile @args
+    python -m podman_compose -f $ComposeFile @args
 }
 
 function Get-ContainerName {
