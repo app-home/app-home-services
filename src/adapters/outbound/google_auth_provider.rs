@@ -54,6 +54,16 @@ impl AuthProvider for GoogleAuthProvider {
         let claims = token_data.claims;
 
         let email = claims.email.ok_or(AuthError::TokenVerificationFailed)?;
+
+        // Google's guidance for "Sign in with Google" is to check email_verified
+        // before trusting the email claim as an identifier. Without this, an account
+        // with an unverified email could be used to create or match a user record for
+        // an email address its holder doesn't actually control.
+        if claims.email_verified != Some(true) {
+            tracing::warn!("Google login rejected: email_verified is not true");
+            return Err(AuthError::TokenVerificationFailed);
+        }
+
         let name = claims.name.unwrap_or_else(|| email.clone());
 
         Ok(GoogleUserInfo { email, name })
@@ -65,6 +75,7 @@ impl AuthProvider for GoogleAuthProvider {
 struct GoogleClaims {
     sub: String,
     email: Option<String>,
+    email_verified: Option<bool>,
     name: Option<String>,
     iss: String,
     aud: String,
