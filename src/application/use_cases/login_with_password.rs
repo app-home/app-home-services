@@ -1,3 +1,5 @@
+use std::sync::LazyLock;
+
 use uuid::Uuid;
 
 use crate::application::ports::jwt_service::JwtService;
@@ -14,6 +16,36 @@ pub struct LoginResult {
     pub refresh_token: String,
 }
 
+/// A precomputed bcrypt hash used to perform a "dummy" password verification whenever
+/// there's no real hash to check the supplied password against -- either because the
+/// username doesn't exist, or because it exists but has no password set (e.g. a
+/// Google-only account). Without this, those paths return almost instantly (no
+/// `bcrypt::verify` call), while a real "wrong password for an existing user" always
+/// costs one `bcrypt::verify` (tens of milliseconds) -- a timing difference an
+/// attacker can use to enumerate valid usernames even though every case returns the
+/// same `AuthError::InvalidCredentials` and HTTP response.
+///
+/// Computed once, lazily, at the same cost factor (`bcrypt::DEFAULT_COST`) real user
+/// password hashes use, so the dummy check costs the same as a real one.
+static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
+    bcrypt::hash("dummy-password-for-timing-safety", bcrypt::DEFAULT_COST)
+        .expect("failed to precompute dummy bcrypt hash")
+});
+
+/// Verifies `password` against `user`'s stored hash, always performing exactly one
+/// `bcrypt::verify` call regardless of whether `user` is `None` or has no password
+/// set -- see `DUMMY_PASSWORD_HASH` for why this matters. `pub` so its timing
+/// behavior can be directly unit-tested.
+pub fn verify_password_timing_safe(user: Option<&User>, password: &str) -> bool {
+    match user.and_then(|u| u.password_hash.as_deref()) {
+        Some(hash) => bcrypt::verify(password, hash).unwrap_or(false),
+        None => {
+            let _ = bcrypt::verify(password, DUMMY_PASSWORD_HASH.as_str());
+            false
+        }
+    }
+}
+
 pub async fn login_with_password(
     user_repo: &impl UserRepository,
     session_repo: &impl SessionRepository,
@@ -22,10 +54,11 @@ pub async fn login_with_password(
     username: &str,
     password: &str,
 ) -> Result<LoginResult, AuthError> {
-    let user = user_repo.find_by_username(username).await?;
+    let user_opt = user_repo.find_by_username(username).await?;
+    let password_ok = verify_password_timing_safe(user_opt.as_ref(), password);
 
-    let user = match user {
-        Some(user) if user.verify_password(password) => user,
+    let user = match (password_ok, user_opt) {
+        (true, Some(user)) => user,
         _ => return Err(AuthError::InvalidCredentials),
     };
 
