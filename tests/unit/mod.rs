@@ -1,4 +1,5 @@
 mod audit_test;
+mod google_email_verified_test;
 mod jwt_test;
 mod password_test;
 mod rate_limiter_test;
