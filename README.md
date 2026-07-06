@@ -86,7 +86,7 @@ Successful login returns:
 - `access_token`: Short-lived JWT (default 15 min) for authenticating subsequent requests.
 - `refresh_token`: Longer-lived JWT (default 7 days) used with `/api/auth/refresh` to obtain a new token pair.
 
-Failed logins return `401` with `{"error": "Invalid username or password"}`. A uniform 50 ms delay is applied to all failure responses to prevent timing side-channel attacks.
+Failed logins return `401` with `{"error": "Invalid username or password"}`. Password verification always performs exactly one bcrypt check (a real one, or a dummy one of equal cost when the username doesn't exist or has no password set), so a nonexistent username can't be told apart from a wrong password by response time; a flat 50 ms delay is layered on top as additional defense-in-depth.
 
 ### Using the Auth Middleware
 
@@ -235,7 +235,7 @@ See `Get-Help .\scripts\test-with-podman.ps1` for full details.
 - No plain-text passwords in logs (structured field logging)
 - Rate limiting per IP on both login and refresh (independent counters) to prevent brute-force attacks, backed by Redis for multi-instance deployments (see Rate Limiting above)
 - `X-Forwarded-For`/`X-Real-IP` only trusted from configured reverse proxies (`TRUSTED_PROXY_IPS`), preventing rate-limit bypass via header spoofing
-- Uniform 50 ms delay on all login failures to prevent timing attacks
+- Password login always performs exactly one bcrypt verification (real or a fixed-cost dummy), closing the timing side-channel that would otherwise reveal whether a username exists; a uniform 50 ms delay is layered on top as additional defense-in-depth
 - CORS denied by default (same-origin only)
 - Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
 - Session state transitions are one-way (active → inactive)
