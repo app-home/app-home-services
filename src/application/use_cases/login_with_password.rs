@@ -82,7 +82,7 @@ pub async fn create_session_tokens(
     let password_hash = bcrypt::hash(&token_pair.refresh_token, bcrypt::DEFAULT_COST)
         .map_err(|_| AuthError::TokenGenerationFailed)?;
 
-    let new_session = NewSession::new(session_id, user.id, password_hash, expires_at);
+    let new_session = NewSession::new(session_id, user.id, password_hash, expires_at, "password");
     session_repo.create(new_session).await?;
 
     Ok(LoginResult {

@@ -11,6 +11,10 @@ pub struct RefreshResult {
     pub session_id: Uuid,
     pub access_token: String,
     pub refresh_token: String,
+    /// The auth method the *original* session was created with ("password" or
+    /// "google_oauth"), carried forward from the session being rotated so callers
+    /// (e.g. the audit log) can record the real method instead of assuming one.
+    pub auth_method: String,
 }
 
 pub async fn refresh_token(
@@ -64,7 +68,18 @@ pub async fn refresh_token(
     let refresh_hash = bcrypt::hash(&token_pair.refresh_token, bcrypt::DEFAULT_COST)
         .map_err(|_| AuthError::TokenGenerationFailed)?;
 
-    let new_session = NewSession::new(new_session_id, claims.sub, refresh_hash, expires_at);
+    // Carry the auth_method forward from the session being rotated, rather than
+    // assuming/hardcoding one -- a rotated Google-originated session must stay
+    // attributed to "google_oauth", not silently become "password".
+    let auth_method = session.auth_method.clone();
+
+    let new_session = NewSession::new(
+        new_session_id,
+        claims.sub,
+        refresh_hash,
+        expires_at,
+        auth_method.clone(),
+    );
     session_repo.create(new_session).await?;
 
     Ok(RefreshResult {
@@ -72,5 +87,6 @@ pub async fn refresh_token(
         session_id: new_session_id,
         access_token: token_pair.access_token,
         refresh_token: token_pair.refresh_token,
+        auth_method,
     })
 }

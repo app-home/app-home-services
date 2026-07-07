@@ -11,10 +11,12 @@ fn test_new_session_creation() {
         user_id,
         "hashed_refresh_token".to_string(),
         expires_at,
+        "password",
     );
 
     assert_eq!(session.user_id, user_id);
     assert_eq!(session.refresh_token_hash, "hashed_refresh_token");
+    assert_eq!(session.auth_method, "password");
     assert!(session.validate().is_ok());
 }
 
@@ -25,6 +27,7 @@ fn test_new_session_empty_hash_fails_validation() {
         user_id: Uuid::now_v7(),
         refresh_token_hash: String::new(),
         expires_at: Utc::now() + Duration::hours(1),
+        auth_method: "password".to_string(),
     };
 
     assert!(session.validate().is_err());
@@ -37,6 +40,20 @@ fn test_new_session_expired_fails_validation() {
         user_id: Uuid::now_v7(),
         refresh_token_hash: "hash".to_string(),
         expires_at: Utc::now() - Duration::hours(1),
+        auth_method: "password".to_string(),
+    };
+
+    assert!(session.validate().is_err());
+}
+
+#[test]
+fn test_new_session_empty_auth_method_fails_validation() {
+    let session = NewSession {
+        id: Uuid::now_v7(),
+        user_id: Uuid::now_v7(),
+        refresh_token_hash: "hash".to_string(),
+        expires_at: Utc::now() + Duration::hours(1),
+        auth_method: String::new(),
     };
 
     assert!(session.validate().is_err());
@@ -51,6 +68,7 @@ fn test_session_is_expired() {
         expires_at: Utc::now() - Duration::hours(1),
         is_active: true,
         created_at: Utc::now() - Duration::hours(2),
+        auth_method: "password".to_string(),
     };
 
     assert!(session.is_expired());
@@ -65,6 +83,7 @@ fn test_session_is_not_expired() {
         expires_at: Utc::now() + Duration::hours(1),
         is_active: true,
         created_at: Utc::now(),
+        auth_method: "google_oauth".to_string(),
     };
 
     assert!(!session.is_expired());
@@ -79,6 +98,7 @@ fn test_session_invalidate() {
         expires_at: Utc::now() + Duration::hours(1),
         is_active: true,
         created_at: Utc::now(),
+        auth_method: "password".to_string(),
     };
 
     assert!(session.is_active);
@@ -95,6 +115,7 @@ fn test_session_invalidate_is_one_way() {
         expires_at: Utc::now() + Duration::hours(1),
         is_active: true,
         created_at: Utc::now(),
+        auth_method: "password".to_string(),
     };
 
     session.invalidate();

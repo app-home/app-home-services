@@ -53,7 +53,7 @@ pub async fn login_with_google(
     let refresh_hash = bcrypt::hash(&token_pair.refresh_token, bcrypt::DEFAULT_COST)
         .map_err(|_| AuthError::TokenGenerationFailed)?;
 
-    let new_session = NewSession::new(session_id, user.id, refresh_hash, expires_at);
+    let new_session = NewSession::new(session_id, user.id, refresh_hash, expires_at, "google_oauth");
     session_repo.create(new_session).await?;
 
     Ok(LoginWithGoogleResult {

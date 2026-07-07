@@ -4,6 +4,7 @@ mod jwt_test;
 mod password_test;
 mod rate_limiter_test;
 mod refresh_token_reuse_test;
+mod session_auth_method_test;
 mod session_test;
 mod timing_safety_test;
 mod trusted_proxy_test;
