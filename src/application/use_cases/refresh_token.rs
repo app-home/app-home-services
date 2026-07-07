@@ -28,6 +28,18 @@ pub async fn refresh_token(
         .ok_or(AuthError::SessionNotFound)?;
 
     if !session.is_active {
+        // Reusing an already-invalidated refresh token is a strong signal of theft:
+        // the legitimate client always holds the *current* token after rotation, so
+        // a request bearing the old one most likely means it was copied by someone
+        // else. Revoke every active session for this user rather than only rejecting
+        // this one request, and log it distinctly from a routine "session expired"
+        // rejection so it's visible to whoever is watching security events.
+        tracing::warn!(
+            user_id = %claims.sub,
+            session_id = %claims.session_id,
+            "Refresh token reuse detected -- revoking all sessions for user"
+        );
+        session_repo.invalidate_all_for_user(claims.sub).await?;
         return Err(AuthError::SessionInvalidated);
     }
 
