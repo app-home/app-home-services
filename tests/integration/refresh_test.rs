@@ -79,6 +79,54 @@ async fn test_refresh_with_invalid_token_returns_401() {
     assert_eq!(resp.status(), 401);
 }
 
+/// Regression test for issue #15: a refresh token that is well-formed and validly
+/// signed, but whose session_id doesn't exist in the database (AuthError::SessionNotFound
+/// deep in the use case), must be reported to the client as 401 Unauthorized -- not
+/// fall through to the generic 500 Internal Server Error catch-all.
+///
+/// This crafts a token directly with JwtServiceImpl (using the same JWT_SECRET the
+/// running server is configured with) for a random session_id that was never
+/// created, rather than reusing test_refresh_with_invalid_token_returns_401's
+/// garbage string, since that one already gets rejected earlier as a signature/parse
+/// failure (AuthError::TokenVerificationFailed) and doesn't exercise this code path.
+#[tokio::test]
+#[ignore]
+async fn test_refresh_with_nonexistent_session_returns_401_not_500() {
+    reset_rate_limiters().await;
+
+    use app_home_services::adapters::outbound::jwt_service::JwtServiceImpl;
+    use app_home_services::application::ports::jwt_service::JwtService;
+    use uuid::Uuid;
+
+    let jwt_secret = std::env::var("JWT_SECRET")
+        .expect("JWT_SECRET must be set to the same value the running server uses");
+    let jwt_service = JwtServiceImpl::new(&jwt_secret, 15, 7);
+
+    // Neither of these IDs was ever persisted, so the session lookup inside
+    // refresh_token() will come back None -> AuthError::SessionNotFound.
+    let never_created_user_id = Uuid::now_v7();
+    let never_created_session_id = Uuid::now_v7();
+    let token_pair = jwt_service
+        .generate_token_pair(never_created_user_id, never_created_session_id)
+        .expect("failed to generate a token pair for the test");
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post("http://localhost:3000/api/auth/refresh")
+        .json(&serde_json::json!({
+            "refresh_token": token_pair.refresh_token
+        }))
+        .send()
+        .await
+        .expect("Failed to send request");
+
+    assert_eq!(
+        resp.status(),
+        401,
+        "a refresh token for a nonexistent session must be reported as 401, not 500"
+    );
+}
+
 #[tokio::test]
 #[ignore]
 async fn test_refresh_empty_token_returns_422() {
