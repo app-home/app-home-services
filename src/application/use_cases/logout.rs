@@ -4,12 +4,15 @@ use crate::application::ports::session_repository::SessionRepository;
 use crate::application::ports::user_repository::UserRepository;
 use crate::domain::errors::AuthError;
 
+/// Logs the session out and returns the `auth_method` it was created with
+/// ("password" or "google_oauth"), so callers can record an accurate audit entry
+/// instead of assuming one.
 pub async fn logout(
     session_repo: &impl SessionRepository,
     _user_repo: &impl UserRepository,
     user_id: Uuid,
     session_id: Uuid,
-) -> Result<(), AuthError> {
+) -> Result<String, AuthError> {
     let session = session_repo
         .find_by_id(session_id)
         .await?
@@ -27,5 +30,7 @@ pub async fn logout(
         return Err(AuthError::SessionExpired);
     }
 
-    session_repo.invalidate(session_id).await
+    session_repo.invalidate(session_id).await?;
+
+    Ok(session.auth_method)
 }

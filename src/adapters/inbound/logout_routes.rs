@@ -26,13 +26,13 @@ pub async fn logout_handler(
     )
     .await
     {
-        Ok(()) => {
+        Ok(auth_method) => {
             if let Err(e) = record_audit_entry::record_audit_entry(
                 &state.user_repo,
                 auth_user.user_id,
                 Some(req.session_id),
                 "logout",
-                "password".to_string(),
+                auth_method,
             )
             .await
             {

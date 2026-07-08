@@ -187,6 +187,7 @@ The project follows **Hexagonal Architecture (Ports & Adapters)**:
 | `002_create_user_actions_table.sql` | Audit trail for auth events |
 | `003_create_sessions_table.sql` | Sessions table for JWT refresh token management |
 | `004_extend_user_actions.sql` | Adds `session_id` and `event_type` to user_actions |
+| `005_add_auth_method_to_sessions.sql` | Adds `auth_method` to sessions (`password` / `google_oauth`) |
 
 Migrations run automatically on startup.
 
@@ -239,3 +240,4 @@ See `Get-Help .\scripts\test-with-podman.ps1` for full details.
 - CORS denied by default (same-origin only)
 - Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
 - Session state transitions are one-way (active → inactive)
+- Sessions record the `auth_method` used to create them ("password" / "google_oauth"), so logout/refresh audit entries reflect the real method instead of assuming one

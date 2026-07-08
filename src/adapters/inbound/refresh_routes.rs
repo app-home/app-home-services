@@ -62,7 +62,7 @@ pub async fn refresh_token_handler(
                 result.user_id,
                 Some(result.session_id),
                 "refresh",
-                "password".to_string(),
+                result.auth_method.clone(),
             )
             .await
             {

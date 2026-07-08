@@ -24,9 +24,9 @@ impl SessionRepository for PostgresSessionRepo {
         let now = Utc::now();
 
         let row = sqlx::query_as::<_, SessionRow>(
-            r#"INSERT INTO sessions (id, user_id, refresh_token_hash, expires_at, is_active, created_at)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, user_id, refresh_token_hash, expires_at, is_active, created_at"#,
+            r#"INSERT INTO sessions (id, user_id, refresh_token_hash, expires_at, is_active, created_at, auth_method)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id, user_id, refresh_token_hash, expires_at, is_active, created_at, auth_method"#,
         )
         .bind(session.id)
         .bind(session.user_id)
@@ -34,6 +34,7 @@ impl SessionRepository for PostgresSessionRepo {
         .bind(session.expires_at)
         .bind(true)
         .bind(now)
+        .bind(&session.auth_method)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| AuthError::InternalError(e.to_string()))?;
@@ -43,7 +44,7 @@ impl SessionRepository for PostgresSessionRepo {
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Session>, AuthError> {
         let row = sqlx::query_as::<_, SessionRow>(
-            r#"SELECT id, user_id, refresh_token_hash, expires_at, is_active, created_at
+            r#"SELECT id, user_id, refresh_token_hash, expires_at, is_active, created_at, auth_method
             FROM sessions WHERE id = $1"#,
         )
         .bind(id)
@@ -56,7 +57,7 @@ impl SessionRepository for PostgresSessionRepo {
 
     async fn find_active_by_user_id(&self, user_id: Uuid) -> Result<Vec<Session>, AuthError> {
         let rows = sqlx::query_as::<_, SessionRow>(
-            r#"SELECT id, user_id, refresh_token_hash, expires_at, is_active, created_at
+            r#"SELECT id, user_id, refresh_token_hash, expires_at, is_active, created_at, auth_method
             FROM sessions
             WHERE user_id = $1 AND is_active = TRUE AND expires_at > NOW()
             ORDER BY created_at DESC"#,
@@ -100,6 +101,7 @@ struct SessionRow {
     expires_at: chrono::DateTime<Utc>,
     is_active: bool,
     created_at: chrono::DateTime<Utc>,
+    auth_method: String,
 }
 
 impl SessionRow {
@@ -111,6 +113,7 @@ impl SessionRow {
             expires_at: self.expires_at,
             is_active: self.is_active,
             created_at: self.created_at,
+            auth_method: self.auth_method,
         }
     }
 }
