@@ -1,9 +1,23 @@
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
 
 use crate::adapters::outbound::memory_rate_limiter::MemoryRateLimiter;
 use crate::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
 use crate::application::ports::rate_limiter::RateLimiter;
 use crate::infrastructure::config::settings::Settings;
+
+/// Shareable handles to each rate limiter's Redis fail-open error counter, for
+/// polling into a metrics exporter (see `infrastructure::telemetry::metrics` and the
+/// `/metrics` route wired up in `main`).
+///
+/// Both fields are `None` when running on the in-memory backend (`REDIS_URL` unset),
+/// since `MemoryRateLimiter` has no equivalent counter -- it can't fail open the way
+/// a network-backed limiter can, so there's nothing to observe here for that backend.
+#[derive(Clone, Default)]
+pub struct RateLimiterErrorCounters {
+    pub login: Option<Arc<AtomicU64>>,
+    pub refresh: Option<Arc<AtomicU64>>,
+}
 
 /// Chooses and constructs the rate limiter backends (one for login, one for refresh)
 /// based on `settings.redis_url`: Redis-backed when set (required for correct rate
@@ -14,6 +28,11 @@ use crate::infrastructure::config::settings::Settings;
 /// their own key namespace) so attempts against one endpoint never consume the
 /// other's attempt budget for the same IP.
 ///
+/// Also returns `RateLimiterErrorCounters`: on the Redis backend, this grabs a
+/// shareable handle to each limiter's error counter *before* the limiter is
+/// type-erased into `Arc<dyn RateLimiter>` (past that point, the concrete
+/// `RedisRateLimiter` methods are no longer reachable through the trait object).
+///
 /// Pulled out of `main` so this selection behavior -- in particular, that an unset
 /// `REDIS_URL` falls back to `MemoryRateLimiter` rather than silently doing something
 /// else, and that a *set* `REDIS_URL` that's unreachable surfaces as an `Err` rather
@@ -21,7 +40,8 @@ use crate::infrastructure::config::settings::Settings;
 /// spawning the whole service.
 pub async fn build_rate_limiters(
     settings: &Settings,
-) -> Result<(Arc<dyn RateLimiter>, Arc<dyn RateLimiter>), redis::RedisError> {
+) -> Result<(Arc<dyn RateLimiter>, Arc<dyn RateLimiter>, RateLimiterErrorCounters), redis::RedisError>
+{
     match &settings.redis_url {
         Some(redis_url) => {
             let login_limiter = RedisRateLimiter::connect(
@@ -38,8 +58,18 @@ pub async fn build_rate_limiters(
                 "refresh",
             )
             .await?;
+
+            let error_counters = RateLimiterErrorCounters {
+                login: Some(login_limiter.error_counter_handle()),
+                refresh: Some(refresh_limiter.error_counter_handle()),
+            };
+
             tracing::info!("Rate limiting backend: Redis (shared across instances)");
-            Ok((Arc::new(login_limiter), Arc::new(refresh_limiter)))
+            Ok((
+                Arc::new(login_limiter),
+                Arc::new(refresh_limiter),
+                error_counters,
+            ))
         }
         None => {
             tracing::info!(
@@ -54,6 +84,7 @@ pub async fn build_rate_limiters(
                     settings.rate_limit_max_attempts,
                     settings.rate_limit_window_seconds,
                 )),
+                RateLimiterErrorCounters::default(),
             ))
         }
     }
@@ -84,20 +115,26 @@ mod tests {
     }
 
     /// When REDIS_URL is unset, this must fall back to MemoryRateLimiter without ever
-    /// attempting a network connection. There's no way to downcast the returned
-    /// `Arc<dyn RateLimiter>` back to a concrete type to assert on it directly (the
-    /// port intentionally doesn't require `Any`), so this asserts on the behavior
-    /// that distinguishes the two paths instead: this call succeeds immediately with
-    /// no Redis reachable in the test environment. If the `None` branch ever
-    /// regressed into attempting a Redis connection, this test would fail (or hang)
-    /// rather than silently passing.
+    /// attempting a network connection, and report no error counters (nothing to
+    /// poll for a backend that can't fail open this way). There's no way to downcast
+    /// the returned `Arc<dyn RateLimiter>` back to a concrete type to assert on it
+    /// directly (the port intentionally doesn't require `Any`), so this asserts on
+    /// the behavior that distinguishes the two paths instead: this call succeeds
+    /// immediately with no Redis reachable in the test environment. If the `None`
+    /// branch ever regressed into attempting a Redis connection, this test would
+    /// fail (or hang) rather than silently passing.
     #[tokio::test]
     async fn falls_back_to_memory_backend_when_redis_url_is_unset() {
         let settings = settings_with_redis_url(None);
 
-        build_rate_limiters(&settings)
+        let (_, _, error_counters) = build_rate_limiters(&settings)
             .await
             .expect("expected the memory-backed fallback to succeed");
+
+        assert!(
+            error_counters.login.is_none() && error_counters.refresh.is_none(),
+            "memory backend has no Redis error counters to report"
+        );
     }
 
     /// The login and refresh limiters returned for the memory backend must be
@@ -108,7 +145,7 @@ mod tests {
         use std::net::{IpAddr, Ipv4Addr};
 
         let settings = settings_with_redis_url(None);
-        let (login_limiter, refresh_limiter) = build_rate_limiters(&settings)
+        let (login_limiter, refresh_limiter, _) = build_rate_limiters(&settings)
             .await
             .expect("memory backend should always succeed");
 
