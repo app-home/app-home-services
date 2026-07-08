@@ -95,12 +95,9 @@ mod tests {
     async fn falls_back_to_memory_backend_when_redis_url_is_unset() {
         let settings = settings_with_redis_url(None);
 
-        let result = build_rate_limiters(&settings).await;
-
-        assert!(
-            result.is_ok(),
-            "expected the memory-backed fallback to succeed with no Redis available, got {result:?}"
-        );
+        build_rate_limiters(&settings)
+            .await
+            .expect("expected the memory-backed fallback to succeed");
     }
 
     /// The login and refresh limiters returned for the memory backend must be
