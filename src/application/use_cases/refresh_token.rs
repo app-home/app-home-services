@@ -6,6 +6,7 @@ use crate::application::ports::user_repository::UserRepository;
 use crate::domain::entities::session::NewSession;
 use crate::domain::errors::AuthError;
 
+#[derive(Debug)]
 pub struct RefreshResult {
     pub user_id: Uuid,
     pub session_id: Uuid,
