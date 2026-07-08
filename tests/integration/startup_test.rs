@@ -12,8 +12,14 @@ use std::process::Command;
 async fn test_startup_fails_on_unreachable_db() {
     let output = Command::new("cargo")
         .args(["run", "--quiet"])
+        // Must be >= MIN_JWT_SECRET_LEN (see settings.rs / issue #14) so this test
+        // exercises the DB-unreachable failure path specifically, rather than
+        // failing earlier at JWT_SECRET strength validation.
+        .env(
+            "JWT_SECRET",
+            "test-secret-that-is-at-least-32-bytes-long",
+        )
         .env("DATABASE_URL", "postgres://invalid:5432/unreachable")
-        .env("JWT_SECRET", "test-secret")
         .output()
         .expect("Failed to run cargo");
 
