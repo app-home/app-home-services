@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -25,14 +26,73 @@ struct CachedJwks {
     expires_at: Instant,
 }
 
+/// A time-based cache for a single JWKS value, deliberately decoupled from *how* the
+/// value is fetched (the `fetch` closure passed to `get_or_fetch`). Kept separate
+/// from `GoogleAuthProvider` so the cache hit/miss/expiry/stale-fallback behavior can
+/// be unit-tested against a fake fetch function, without any network access or a
+/// real Google response.
+#[derive(Debug, Clone)]
+struct JwksCache {
+    inner: Arc<RwLock<Option<CachedJwks>>>,
+}
+
+impl JwksCache {
+    fn new() -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    /// Returns the cached JWKS if still fresh; otherwise calls `fetch` to obtain a
+    /// new one (plus its TTL) and caches it.
+    ///
+    /// If `fetch` fails and a value is still cached from before (even if expired),
+    /// serves that stale value instead of propagating the error -- a transient
+    /// upstream failure shouldn't fail every call while we still hold keys that are
+    /// very likely still valid. The error only propagates when there's nothing
+    /// cached to fall back on.
+    async fn get_or_fetch<F, Fut>(&self, fetch: F) -> Result<jsonwebtoken::jwk::JwkSet, AuthError>
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = Result<(jsonwebtoken::jwk::JwkSet, Duration), AuthError>>,
+    {
+        if let Some(cached) = self.inner.read().await.as_ref() {
+            if cached.expires_at > Instant::now() {
+                return Ok(cached.jwks.clone());
+            }
+        }
+
+        match fetch().await {
+            Ok((jwks, ttl)) => {
+                let cached = CachedJwks {
+                    jwks: jwks.clone(),
+                    expires_at: Instant::now() + ttl,
+                };
+                *self.inner.write().await = Some(cached);
+                Ok(jwks)
+            }
+            Err(e) => {
+                if let Some(stale) = self.inner.read().await.as_ref() {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to refresh JWKS; serving stale cached keys"
+                    );
+                    return Ok(stale.jwks.clone());
+                }
+                Err(e)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GoogleAuthProvider {
     client_id: String,
-    /// A single shared client, built once, so TCP connections/TLS sessions to
-    /// Google's certs endpoint can be pooled and reused across requests instead of
+    /// A single shared client, built once in `new`, so TCP connections/TLS sessions
+    /// to Google's certs endpoint get pooled and reused across requests instead of
     /// paying fresh connection setup on every login.
     http_client: reqwest::Client,
-    jwks_cache: Arc<RwLock<Option<CachedJwks>>>,
+    jwks_cache: JwksCache,
 }
 
 impl GoogleAuthProvider {
@@ -45,68 +105,40 @@ impl GoogleAuthProvider {
         Self {
             client_id,
             http_client,
-            jwks_cache: Arc::new(RwLock::new(None)),
+            jwks_cache: JwksCache::new(),
         }
     }
 
-    /// Returns the current JWKS, serving from cache when still fresh and only
-    /// hitting the network on a cache miss/expiry.
     async fn get_jwks(&self) -> Result<jsonwebtoken::jwk::JwkSet, AuthError> {
-        if let Some(cached) = self.jwks_cache.read().await.as_ref() {
-            if cached.expires_at > Instant::now() {
-                return Ok(cached.jwks.clone());
-            }
-        }
-
-        match self.fetch_jwks().await {
-            Ok(fresh) => {
-                let jwks = fresh.jwks.clone();
-                *self.jwks_cache.write().await = Some(fresh);
-                Ok(jwks)
-            }
-            // On a fetch failure, prefer serving a still-cached (even if just-expired)
-            // JWKS over failing the login outright -- a transient Google outage or
-            // rate limit shouldn't block every login while we still hold keys that
-            // are very likely still valid. Only propagate the error when there's
-            // nothing cached to fall back on.
-            Err(e) => {
-                if let Some(stale) = self.jwks_cache.read().await.as_ref() {
-                    tracing::warn!(
-                        error = %e,
-                        "Failed to refresh Google JWKS; serving stale cached keys"
-                    );
-                    return Ok(stale.jwks.clone());
-                }
-                Err(e)
-            }
-        }
-    }
-
-    async fn fetch_jwks(&self) -> Result<CachedJwks, AuthError> {
-        let response = self
-            .http_client
-            .get(GOOGLE_JWKS_URL)
-            .send()
+        let client = self.http_client.clone();
+        self.jwks_cache
+            .get_or_fetch(|| async move { fetch_jwks_from_google(&client).await })
             .await
-            .map_err(|_e| AuthError::TokenVerificationFailed)?;
-
-        let ttl = response
-            .headers()
-            .get(reqwest::header::CACHE_CONTROL)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_max_age)
-            .unwrap_or(DEFAULT_JWKS_TTL);
-
-        let jwks: jsonwebtoken::jwk::JwkSet = response
-            .json()
-            .await
-            .map_err(|_| AuthError::TokenVerificationFailed)?;
-
-        Ok(CachedJwks {
-            jwks,
-            expires_at: Instant::now() + ttl,
-        })
     }
+}
+
+async fn fetch_jwks_from_google(
+    client: &reqwest::Client,
+) -> Result<(jsonwebtoken::jwk::JwkSet, Duration), AuthError> {
+    let response = client
+        .get(GOOGLE_JWKS_URL)
+        .send()
+        .await
+        .map_err(|_e| AuthError::TokenVerificationFailed)?;
+
+    let ttl = response
+        .headers()
+        .get(reqwest::header::CACHE_CONTROL)
+        .and_then(|v| v.to_str().ok())
+        .and_then(parse_max_age)
+        .unwrap_or(DEFAULT_JWKS_TTL);
+
+    let jwks: jsonwebtoken::jwk::JwkSet = response
+        .json()
+        .await
+        .map_err(|_| AuthError::TokenVerificationFailed)?;
+
+    Ok((jwks, ttl))
 }
 
 /// Parses the `max-age=<seconds>` directive out of a `Cache-Control` header value, if
@@ -190,7 +222,7 @@ pub struct GoogleClaims {
 }
 
 #[cfg(test)]
-mod tests {
+mod max_age_tests {
     use super::*;
 
     #[test]
@@ -211,10 +243,7 @@ mod tests {
 
     #[test]
     fn parse_max_age_is_case_insensitive_on_the_directive_name() {
-        assert_eq!(
-            parse_max_age("Max-Age=60"),
-            Some(Duration::from_secs(60))
-        );
+        assert_eq!(parse_max_age("Max-Age=60"), Some(Duration::from_secs(60)));
     }
 
     #[test]
@@ -225,5 +254,133 @@ mod tests {
     #[test]
     fn parse_max_age_returns_none_on_malformed_value() {
         assert_eq!(parse_max_age("max-age=not-a-number"), None);
+    }
+}
+
+#[cfg(test)]
+mod jwks_cache_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn empty_jwks() -> jsonwebtoken::jwk::JwkSet {
+        jsonwebtoken::jwk::JwkSet { keys: Vec::new() }
+    }
+
+    #[tokio::test]
+    async fn first_call_is_a_cache_miss_and_invokes_fetch() {
+        let cache = JwksCache::new();
+        let calls = AtomicUsize::new(0);
+
+        let result = cache
+            .get_or_fetch(|| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok((empty_jwks(), Duration::from_secs(60)))
+            })
+            .await;
+
+        assert!(result.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn second_call_within_ttl_is_a_cache_hit_and_does_not_invoke_fetch() {
+        let cache = JwksCache::new();
+        let calls = AtomicUsize::new(0);
+
+        cache
+            .get_or_fetch(|| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok((empty_jwks(), Duration::from_secs(60)))
+            })
+            .await
+            .unwrap();
+
+        cache
+            .get_or_fetch(|| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok((empty_jwks(), Duration::from_secs(60)))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "second call inside the TTL should be served from cache without re-fetching"
+        );
+    }
+
+    #[tokio::test]
+    async fn call_after_ttl_expiry_re_invokes_fetch() {
+        let cache = JwksCache::new();
+        let calls = AtomicUsize::new(0);
+
+        cache
+            .get_or_fetch(|| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                // Deliberately tiny TTL so the test doesn't need to wait long.
+                Ok((empty_jwks(), Duration::from_millis(20)))
+            })
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        cache
+            .get_or_fetch(|| async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok((empty_jwks(), Duration::from_secs(60)))
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "a call after the cached TTL has expired should re-fetch"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_failure_with_a_stale_cache_serves_the_stale_value() {
+        let cache = JwksCache::new();
+
+        cache
+            .get_or_fetch(|| async { Ok((empty_jwks(), Duration::from_millis(10))) })
+            .await
+            .unwrap();
+
+        tokio::time::sleep(Duration::from_millis(30)).await;
+
+        let result = cache
+            .get_or_fetch(|| async {
+                Err::<(jsonwebtoken::jwk::JwkSet, Duration), AuthError>(
+                    AuthError::TokenVerificationFailed,
+                )
+            })
+            .await;
+
+        assert!(
+            result.is_ok(),
+            "a fetch failure should fall back to the stale cached value, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn fetch_failure_with_no_cache_propagates_the_error() {
+        let cache = JwksCache::new();
+
+        let result = cache
+            .get_or_fetch(|| async {
+                Err::<(jsonwebtoken::jwk::JwkSet, Duration), AuthError>(
+                    AuthError::TokenVerificationFailed,
+                )
+            })
+            .await;
+
+        assert!(
+            result.is_err(),
+            "a fetch failure with nothing cached should propagate the error"
+        );
     }
 }
