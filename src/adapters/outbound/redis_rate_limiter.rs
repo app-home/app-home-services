@@ -51,11 +51,10 @@ pub struct RedisRateLimiter {
     ///
     /// This is intentionally a plain counter rather than a dependency on a specific
     /// metrics backend (e.g. `prometheus` or `metrics`), so it can be wired into
-    /// whatever telemetry stack the deployment uses (poll it periodically and export
-    /// it as `rate_limiter_redis_errors_total`, or similar) without this crate taking
-    /// on that dependency directly. See #19 for the associated alerting follow-up
-    /// (e.g. "N errors in 5 minutes -> notify"), which is an operational/runbook
-    /// concern outside this counter's scope.
+    /// whatever telemetry stack the deployment uses. See `error_counter_handle` for
+    /// getting a shareable handle to this same counter (used by
+    /// `rate_limiter_setup::build_rate_limiters` to wire it into a `metrics::counter!`
+    /// exported over `/metrics` -- see #36), and #37/#38 for related follow-ups.
     redis_error_count: Arc<AtomicU64>,
 }
 
@@ -91,6 +90,16 @@ impl RedisRateLimiter {
     /// meant to be consumed.
     pub fn redis_error_count(&self) -> u64 {
         self.redis_error_count.load(Ordering::Relaxed)
+    }
+
+    /// Returns a cloned, shareable handle to this limiter's error counter, so a
+    /// caller can keep polling it (e.g. into a metrics exporter) after this
+    /// `RedisRateLimiter` has been type-erased into an `Arc<dyn RateLimiter>` and its
+    /// concrete methods are no longer reachable. See
+    /// `rate_limiter_setup::build_rate_limiters`, which grabs this handle before
+    /// erasing the type.
+    pub fn error_counter_handle(&self) -> Arc<AtomicU64> {
+        Arc::clone(&self.redis_error_count)
     }
 
     fn record_redis_error(&self) {
