@@ -1,4 +1,6 @@
 use std::net::IpAddr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
@@ -32,14 +34,29 @@ return current
 /// On Redis errors (e.g. connection dropped), this implementation fails open --
 /// `check` returns `true` and `remaining_attempts` returns the max -- rather than
 /// blocking every request because Redis is briefly unavailable. Each failure is
-/// logged at `error` level so the outage is visible; `ConnectionManager` also
-/// reconnects automatically in the background.
+/// logged at `error` level so the outage is visible in logs, and also counted in
+/// `redis_error_count` (see its docs) so it can additionally be surfaced as a metric.
+/// `ConnectionManager` also reconnects automatically in the background.
 #[derive(Clone)]
 pub struct RedisRateLimiter {
     conn: ConnectionManager,
     max_attempts: u32,
     window_seconds: u64,
     key_prefix: String,
+    /// Running count of Redis errors encountered by this limiter instance (across
+    /// `check`, `record_attempt`, `remaining_attempts`, and `reset`), i.e. every time
+    /// this limiter has failed open. `Arc`-shared with every clone of this limiter
+    /// (the service clones it per-request), so the count reflects all fail-open
+    /// occurrences for this endpoint's rate limiting, not just one clone's.
+    ///
+    /// This is intentionally a plain counter rather than a dependency on a specific
+    /// metrics backend (e.g. `prometheus` or `metrics`), so it can be wired into
+    /// whatever telemetry stack the deployment uses (poll it periodically and export
+    /// it as `rate_limiter_redis_errors_total`, or similar) without this crate taking
+    /// on that dependency directly. See #19 for the associated alerting follow-up
+    /// (e.g. "N errors in 5 minutes -> notify"), which is an operational/runbook
+    /// concern outside this counter's scope.
+    redis_error_count: Arc<AtomicU64>,
 }
 
 impl RedisRateLimiter {
@@ -61,11 +78,23 @@ impl RedisRateLimiter {
             max_attempts,
             window_seconds,
             key_prefix: key_prefix.into(),
+            redis_error_count: Arc::new(AtomicU64::new(0)),
         })
     }
 
     fn key(&self, ip: IpAddr) -> String {
         format!("ratelimit:{}:{ip}", self.key_prefix)
+    }
+
+    /// Total number of Redis errors (fail-open occurrences) observed by this limiter
+    /// since it was created. See the field doc on `redis_error_count` for how this is
+    /// meant to be consumed.
+    pub fn redis_error_count(&self) -> u64 {
+        self.redis_error_count.load(Ordering::Relaxed)
+    }
+
+    fn record_redis_error(&self) {
+        self.redis_error_count.fetch_add(1, Ordering::Relaxed);
     }
 }
 
@@ -79,6 +108,7 @@ impl RateLimiter for RedisRateLimiter {
             Ok(Some(count)) => count < self.max_attempts,
             Ok(None) => true,
             Err(e) => {
+                self.record_redis_error();
                 tracing::error!(
                     error = %e,
                     scope = %self.key_prefix,
@@ -99,6 +129,7 @@ impl RateLimiter for RedisRateLimiter {
             .await;
 
         if let Err(e) = result {
+            self.record_redis_error();
             tracing::error!(
                 error = %e,
                 scope = %self.key_prefix,
@@ -115,6 +146,7 @@ impl RateLimiter for RedisRateLimiter {
             Ok(Some(count)) => self.max_attempts.saturating_sub(count),
             Ok(None) => self.max_attempts,
             Err(e) => {
+                self.record_redis_error();
                 tracing::error!(
                     error = %e,
                     scope = %self.key_prefix,
@@ -130,6 +162,7 @@ impl RateLimiter for RedisRateLimiter {
         let result: redis::RedisResult<i64> = conn.del(self.key(ip)).await;
 
         if let Err(e) = result {
+            self.record_redis_error();
             tracing::error!(
                 error = %e,
                 scope = %self.key_prefix,
