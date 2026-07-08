@@ -1,5 +1,4 @@
 use std::net::SocketAddr;
-use std::sync::Arc;
 
 use axum::routing::post;
 
@@ -10,12 +9,10 @@ use app_home_services::adapters::inbound::oauth_callback::login_google_handler;
 use app_home_services::adapters::inbound::refresh_routes::refresh_token_handler;
 use app_home_services::adapters::outbound::google_auth_provider::GoogleAuthProvider;
 use app_home_services::adapters::outbound::jwt_service::JwtServiceImpl;
-use app_home_services::adapters::outbound::memory_rate_limiter::MemoryRateLimiter;
 use app_home_services::adapters::outbound::postgres_session_repo::PostgresSessionRepo;
 use app_home_services::adapters::outbound::postgres_user_repo::PostgresUserRepo;
-use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
-use app_home_services::application::ports::rate_limiter::RateLimiter;
 use app_home_services::infrastructure::config::settings::Settings;
+use app_home_services::infrastructure::rate_limiter_setup::build_rate_limiters;
 
 #[tokio::main]
 async fn main() {
@@ -59,51 +56,12 @@ async fn main() {
         settings.refresh_token_expiry_days,
     );
 
-    // Rate limiter backends: Redis when REDIS_URL is configured (required for correct
-    // rate limiting when running more than one instance of this service), otherwise
-    // in-memory limiters (single instance only -- see MemoryRateLimiter's docs).
-    //
-    // Login and refresh each get their own limiter instance (and, on Redis, their own
-    // key namespace) so attempts against one endpoint never consume the other's
-    // attempt budget for the same IP.
-    let (rate_limiter, refresh_rate_limiter): (Arc<dyn RateLimiter>, Arc<dyn RateLimiter>) =
-        match &settings.redis_url {
-            Some(redis_url) => {
-                let login_limiter = RedisRateLimiter::connect(
-                    redis_url,
-                    settings.rate_limit_max_attempts,
-                    settings.rate_limit_window_seconds,
-                    "login",
-                )
-                .await
-                .expect("Failed to connect to Redis for login rate limiting");
-                let refresh_limiter = RedisRateLimiter::connect(
-                    redis_url,
-                    settings.rate_limit_max_attempts,
-                    settings.rate_limit_window_seconds,
-                    "refresh",
-                )
-                .await
-                .expect("Failed to connect to Redis for refresh rate limiting");
-                tracing::info!("Rate limiting backend: Redis (shared across instances)");
-                (Arc::new(login_limiter), Arc::new(refresh_limiter))
-            }
-            None => {
-                tracing::info!(
-                    "Rate limiting backend: in-memory (REDIS_URL not set -- only safe for a single instance)"
-                );
-                (
-                    Arc::new(MemoryRateLimiter::new(
-                        settings.rate_limit_max_attempts,
-                        settings.rate_limit_window_seconds,
-                    )),
-                    Arc::new(MemoryRateLimiter::new(
-                        settings.rate_limit_max_attempts,
-                        settings.rate_limit_window_seconds,
-                    )),
-                )
-            }
-        };
+    // See build_rate_limiters' docs for why REDIS_URL selects the backend, and why
+    // this is a fatal startup error (rather than a silent fallback) when REDIS_URL is
+    // set but Redis is unreachable.
+    let (rate_limiter, refresh_rate_limiter) = build_rate_limiters(&settings)
+        .await
+        .expect("Failed to set up rate limiters");
 
     let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
