@@ -91,6 +91,15 @@ pub async fn refresh_token_handler(
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({"error": "Session has expired"})),
         ),
+        // A missing session is an expected client-side outcome (e.g. the session was
+        // deleted, or a token references a session id that no longer exists) -- not
+        // an internal failure. Treat it the same as an invalid refresh token rather
+        // than falling through to the 500 catch-all below, which both misreports it
+        // to clients and pollutes error-rate monitoring with tracing::error! noise.
+        Err(AuthError::SessionNotFound) => (
+            StatusCode::UNAUTHORIZED,
+            Json(serde_json::json!({"error": "Invalid or expired refresh token"})),
+        ),
         Err(e) => {
             tracing::error!(error = %e, "Token refresh error");
             (
