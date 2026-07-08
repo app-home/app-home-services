@@ -1,5 +1,25 @@
 use std::net::IpAddr;
 
+/// Minimum acceptable length (in bytes) for `JWT_SECRET`. HS256 signing strength is
+/// bounded by the entropy of the secret, so a short/guessable value makes access and
+/// refresh tokens forgeable via brute force. 32 bytes is the floor; `.env.example`
+/// recommends 64 (`openssl rand -hex 64`).
+pub const MIN_JWT_SECRET_LEN: usize = 32;
+
+/// Validates that a JWT secret meets the minimum strength requirement.
+///
+/// Pulled out as its own function (rather than inlined in `from_env`) so it can be
+/// unit-tested directly without going through process environment variables.
+pub fn validate_jwt_secret(secret: &str) -> Result<(), String> {
+    if secret.len() < MIN_JWT_SECRET_LEN {
+        return Err(format!(
+            "JWT_SECRET must be at least {MIN_JWT_SECRET_LEN} bytes long (got {}); generate one with `openssl rand -hex 64`",
+            secret.len()
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone)]
 pub struct Settings {
     pub database_url: String,
@@ -44,8 +64,12 @@ impl Settings {
             default_user_email: std::env::var("DEFAULT_USER_EMAIL")
                 .unwrap_or_else(|_| "admin@example.com".to_string()),
             google_client_id: std::env::var("GOOGLE_CLIENT_ID").unwrap_or_else(|_| String::new()),
-            jwt_secret: std::env::var("JWT_SECRET")
-                .map_err(|_| "JWT_SECRET must be set".to_string())?,
+            jwt_secret: {
+                let secret = std::env::var("JWT_SECRET")
+                    .map_err(|_| "JWT_SECRET must be set".to_string())?;
+                validate_jwt_secret(&secret)?;
+                secret
+            },
             rate_limit_max_attempts: std::env::var("RATE_LIMIT_MAX_ATTEMPTS")
                 .unwrap_or_else(|_| "10".to_string())
                 .parse()
