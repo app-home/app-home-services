@@ -8,38 +8,52 @@
 // Prerequisites:
 // - `podman` (or an aliased `docker`) available on PATH and able to pull/run images
 //   without sudo, matching the existing run-postgres-dev.ps1-style local setup.
-// - Port 16379 free on localhost (deliberately not 6379, so this never collides
-//   with a dev Redis you might already have running via run-postgres-dev.ps1).
 //
-// This test is fully self-contained: it starts its own disposable Redis container,
-// connects to it, kills it mid-test to simulate a live failure, and removes the
-// container when done (via RedisTestContainer's Drop impl, which runs even if an
-// assertion panics, since panics unwind by default).
+// This test is fully self-contained: it starts its own disposable Redis container on
+// an OS-assigned free port (so it never collides with a dev/test Redis you might
+// already have running -- e.g. scripts/test-with-podman.ps1's compose setup binds
+// port 16379, which is why this test does NOT hardcode that port), connects to it,
+// kills it mid-test to simulate a live failure, and removes the container when done
+// (via RedisTestContainer's Drop impl, which runs even if an assertion panics, since
+// panics unwind by default).
 
+use std::net::TcpListener;
 use std::process::Command;
 use std::time::Duration;
 
 use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
 use app_home_services::application::ports::rate_limiter::RateLimiter;
 
-const TEST_REDIS_PORT: u16 = 16379;
+/// Asks the OS for a free TCP port by binding to port 0 and reading back what it
+/// assigned, then immediately releasing it. There's an inherent small race between
+/// releasing the port here and `podman run` binding it moments later, but this is
+/// the standard lightweight way to avoid hardcoding a port that might already be in
+/// use by something else on the machine (as `16379` was, colliding with
+/// scripts/test-with-podman.ps1's own Redis container).
+fn find_free_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0))
+        .expect("failed to bind to an ephemeral port to find a free one")
+        .local_addr()
+        .expect("failed to read the bound ephemeral port")
+        .port()
+}
 
 /// Manages a disposable `redis:7-alpine` container for this test only, via `podman`.
 /// Names the container using this process's PID so two test runs never collide, and
 /// removes it (forcefully, in case it was already killed by the test) on drop.
 struct RedisTestContainer {
     name: String,
+    port: u16,
 }
 
 impl RedisTestContainer {
     fn start() -> Self {
         let name = format!("apphome-redis-flaky-test-{}", std::process::id());
+        let port = find_free_port();
 
         // Best-effort cleanup of a leftover container from a previous crashed run
         // with the same PID (unlikely, but cheap to guard against).
-        let _ = Command::new("podman")
-            .args(["rm", "-f", &name])
-            .output();
+        let _ = Command::new("podman").args(["rm", "-f", &name]).output();
 
         let status = Command::new("podman")
             .args([
@@ -48,7 +62,7 @@ impl RedisTestContainer {
                 "--name",
                 &name,
                 "-p",
-                &format!("{TEST_REDIS_PORT}:6379"),
+                &format!("{port}:6379"),
                 "docker.io/library/redis:7-alpine",
             ])
             .status()
@@ -59,9 +73,13 @@ impl RedisTestContainer {
             "`podman run` failed to start the test Redis container"
         );
 
-        let container = Self { name };
+        let container = Self { name, port };
         container.wait_until_ready();
         container
+    }
+
+    fn redis_url(&self) -> String {
+        format!("redis://127.0.0.1:{}", self.port)
     }
 
     /// Polls with a real Redis connection attempt (not just a TCP port check) until
@@ -69,7 +87,7 @@ impl RedisTestContainer {
     /// returns as soon as the container process starts, not once Redis inside it is
     /// ready to serve.
     fn wait_until_ready(&self) {
-        let addr = format!("redis://127.0.0.1:{TEST_REDIS_PORT}");
+        let addr = self.redis_url();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
 
         loop {
@@ -122,7 +140,9 @@ impl Drop for RedisTestContainer {
         // since there's nothing more useful to do with a cleanup failure here than
         // let it surface as leftover container noise the next time `podman ps -a` is
         // run.
-        let _ = Command::new("podman").args(["rm", "-f", &self.name]).output();
+        let _ = Command::new("podman")
+            .args(["rm", "-f", &self.name])
+            .output();
     }
 }
 
@@ -132,7 +152,7 @@ async fn redis_connection_failure_causes_every_method_to_fail_open() {
     use std::net::{IpAddr, Ipv4Addr};
 
     let container = RedisTestContainer::start();
-    let redis_url = format!("redis://127.0.0.1:{TEST_REDIS_PORT}");
+    let redis_url = container.redis_url();
 
     let limiter = RedisRateLimiter::connect(&redis_url, 10, 300, "flaky-test")
         .await
