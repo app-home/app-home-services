@@ -145,7 +145,7 @@ async fn connects_successfully_with_the_correct_password() {
 
     assert!(
         result.is_ok(),
-        "connecting with the correct password should succeed, got {result:?}"
+        "connecting with the correct password should succeed"
     );
 }
 

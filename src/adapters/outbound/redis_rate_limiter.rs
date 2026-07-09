@@ -72,6 +72,9 @@ impl RedisRateLimiter {
     ) -> redis::RedisResult<Self> {
         let client = redis::Client::open(redis_url)?;
         let conn = client.get_connection_manager().await?;
+        redis::cmd("PING")
+            .query_async::<()>(&mut conn.clone())
+            .await?;
         Ok(Self {
             conn,
             max_attempts,
