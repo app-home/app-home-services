@@ -1,0 +1,20 @@
+groups:
+  - name: app-home-services-rate-limiter
+    rules:
+      - alert: RedisRateLimiterFailingOpen
+        # Starting threshold is deliberately low/sensitive (> 0 errors in a 5-minute
+        # window) so it fires on essentially any Redis error while we're still
+        # gathering a baseline of what "normal" transient noise looks like in this
+        # deployment. See docs/alerting.md for how and when to raise this.
+        expr: increase(rate_limiter_redis_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis rate limiter is failing open ({{ $labels.scope }})"
+          description: >-
+            The {{ $labels.scope }} rate limiter has recorded
+            {{ $value }} Redis error(s) in the last 5 minutes and is failing
+            open (allowing all requests through) for each one. See
+            docs/alerting.md for context and for how to raise this
+            threshold if it's firing too often on transient blips.

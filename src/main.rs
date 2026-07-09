@@ -1,6 +1,8 @@
 use std::net::SocketAddr;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
 
-use axum::routing::post;
+use axum::routing::{get, post};
 
 use app_home_services::AppState;
 use app_home_services::adapters::inbound::login_routes::login_password_handler;
@@ -12,7 +14,9 @@ use app_home_services::adapters::outbound::jwt_service::JwtServiceImpl;
 use app_home_services::adapters::outbound::postgres_session_repo::PostgresSessionRepo;
 use app_home_services::adapters::outbound::postgres_user_repo::PostgresUserRepo;
 use app_home_services::infrastructure::config::settings::Settings;
-use app_home_services::infrastructure::rate_limiter_setup::build_rate_limiters;
+use app_home_services::infrastructure::rate_limiter_setup::{
+    RateLimiterErrorCounters, build_rate_limiters,
+};
 
 #[tokio::main]
 async fn main() {
@@ -20,6 +24,10 @@ async fn main() {
     app_home_services::infrastructure::telemetry::logging::init_logging();
 
     tracing::info!("Starting App Home Services");
+
+    // Installed once, up front, before anything below records a metric -- the
+    // metrics::counter!/gauge! macros are no-ops until a recorder is installed.
+    let metrics_handle = app_home_services::infrastructure::telemetry::metrics::install_prometheus_recorder();
 
     let settings = Settings::from_env().expect("Failed to load settings");
 
@@ -59,9 +67,12 @@ async fn main() {
     // See build_rate_limiters' docs for why REDIS_URL selects the backend, and why
     // this is a fatal startup error (rather than a silent fallback) when REDIS_URL is
     // set but Redis is unreachable.
-    let (rate_limiter, refresh_rate_limiter) = build_rate_limiters(&settings)
-        .await
-        .expect("Failed to set up rate limiters");
+    let (rate_limiter, refresh_rate_limiter, rate_limiter_error_counters) =
+        build_rate_limiters(&settings)
+            .await
+            .expect("Failed to set up rate limiters");
+
+    spawn_rate_limiter_metrics_poller(rate_limiter_error_counters);
 
     let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
@@ -103,7 +114,17 @@ async fn main() {
         .route("/api/auth/login/google", post(login_google_handler))
         .route("/api/auth/logout", post(logout_handler))
         .route("/api/auth/refresh", post(refresh_token_handler))
-        .route("/api/health", axum::routing::get(health_check))
+        .route("/api/health", get(health_check))
+        // Not gated behind auth: Prometheus scrape endpoints are conventionally
+        // reached only from inside a private network / the cluster's monitoring
+        // namespace, never exposed publicly. If this service is ever reachable from
+        // the public internet without a network boundary in front of it, this route
+        // should not be exposed as-is (see .env.example's CORS/proxy notes for the
+        // service's general public-exposure assumptions).
+        .route(
+            "/metrics",
+            get(move || std::future::ready(metrics_handle.render())),
+        )
         .layer(cors)
         .with_state(state);
 
@@ -122,6 +143,38 @@ async fn main() {
     )
     .await
     .expect("Server error");
+}
+
+/// Spawns a background task that, every 15 seconds, reads each rate limiter's Redis
+/// error counter (if it has one -- see `RateLimiterErrorCounters`) and publishes it
+/// as `rate_limiter_redis_errors_total{scope="login"|"refresh"}` to the installed
+/// Prometheus recorder.
+///
+/// Uses `Counter::absolute` (not `increment`) since `counter` is already the
+/// cumulative total maintained independently inside `RedisRateLimiter` -- this task
+/// just mirrors that value into the metrics recorder on an interval, rather than
+/// tracking its own delta.
+///
+/// A no-op for a scope currently on the in-memory backend (`counters.login`/`refresh`
+/// is `None`), since there's nothing to poll there.
+fn spawn_rate_limiter_metrics_poller(counters: RateLimiterErrorCounters) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+
+            if let Some(counter) = &counters.login {
+                let value = counter.load(Ordering::Relaxed);
+                metrics::counter!("rate_limiter_redis_errors_total", "scope" => "login")
+                    .absolute(value);
+            }
+            if let Some(counter) = &counters.refresh {
+                let value = counter.load(Ordering::Relaxed);
+                metrics::counter!("rate_limiter_redis_errors_total", "scope" => "refresh")
+                    .absolute(value);
+            }
+        }
+    });
 }
 
 async fn health_check() -> axum::Json<serde_json::Value> {
