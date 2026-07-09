@@ -69,6 +69,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 | Method | Path | Auth | Description |
 | -------- | ------ | ------ | ------------- |
 | GET | `/api/health` | No | Health check |
+| GET | `/metrics` | No | Prometheus metrics (see Metrics & Alerting below) |
 
 ### Login Responses
 
@@ -136,7 +137,7 @@ Only requests arriving from an IP listed in `TRUSTED_PROXY_IPS` may use `X-Forwa
 The rate limiter backend is chosen automatically at startup:
 
 - **`REDIS_URL` unset (default):** in-memory counters (`MemoryRateLimiter`). Only safe for a single running instance -- counters are lost on restart and are not shared with other replicas.
-- **`REDIS_URL` set:** Redis-backed counters (`RedisRateLimiter`), incremented atomically via a Lua script. Counters are shared across every instance connected to the same Redis, so the limit stays effective when the service is scaled horizontally or restarted. If Redis is temporarily unreachable, the limiter fails open (allows the request) and logs an error, rather than blocking every login/refresh.
+- **`REDIS_URL` set:** Redis-backed counters (`RedisRateLimiter`), incremented atomically via a Lua script. Counters are shared across every instance connected to the same Redis, so the limit stays effective when the service is scaled horizontally or restarted. If Redis is temporarily unreachable, the limiter fails open (allows the request) and logs an error, rather than blocking every login/refresh -- this is observable via metrics, see Metrics & Alerting below.
 
 ### CORS
 
@@ -205,7 +206,7 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test --test integration -- --ignored redi
 ```
 
 - **Unit tests**: Session entity, JWT service, rate limiter (in-memory), trusted-proxy IP resolution, user action audit, password hashing
-- **Integration tests** (ignored by default): Login, logout, refresh, refresh rate limiting, CORS, rate limiting, startup hardening, Redis-backed rate limiting
+- **Integration tests** (ignored by default): Login, logout, refresh, refresh rate limiting, CORS, rate limiting, startup hardening, Redis-backed rate limiting, Redis auth enforcement, live Redis connection failure
 
 ### Podman test environment
 
@@ -228,6 +229,37 @@ Run it from the project root:
 
 See `Get-Help .\scripts\test-with-podman.ps1` for full details.
 
+## Metrics & Alerting
+
+The service exposes a Prometheus-compatible metrics endpoint:
+
+```
+GET /metrics
+```
+
+This is not authenticated, so it should only be reachable from inside your monitoring network/namespace, not exposed publicly -- same expectation as any Prometheus scrape target.
+
+### Available metrics
+
+| Metric | Type | Labels | Description |
+| -------- | ------ | -------- | ------------- |
+| `rate_limiter_redis_errors_total` | Counter | `scope="login"` \| `scope="refresh"` | Cumulative count of Redis errors encountered by the rate limiter (i.e. every time it failed open and allowed a request through instead of enforcing the limit). Absent/zero when running on the in-memory backend (`REDIS_URL` unset), since that backend has no equivalent failure mode. Resets to 0 on process restart. Polled from the rate limiter's internal counter and republished every 15 seconds. |
+
+### Scraping
+
+Add a scrape target in your Prometheus config, e.g.:
+
+```yaml
+scrape_configs:
+  - job_name: app-home-services
+    static_configs:
+      - targets: ["app-home-services:3000"]
+```
+
+### Alerting
+
+An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limiter_redis_errors_total` increases at all within a 5-minute window. The threshold starts deliberately low (`> 0`) since there's no baseline yet for what "normal" transient Redis noise looks like in this deployment -- see [`docs/alerting.md`](docs/alerting.md) for the full reasoning and a concrete process for raising the threshold once you have a couple of weeks of real data.
+
 ## Security
 
 - Passwords hashed with bcrypt (never stored in plaintext)
@@ -241,3 +273,4 @@ See `Get-Help .\scripts\test-with-podman.ps1` for full details.
 - Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
 - Session state transitions are one-way (active → inactive)
 - Sessions record the `auth_method` used to create them ("password" / "google_oauth"), so logout/refresh audit entries reflect the real method instead of assuming one
+- Redis connections support password auth (`redis://:password@host:port`); TLS is not crate-native today -- see `docs/redis-security.md` for the documented decision and when to revisit it
