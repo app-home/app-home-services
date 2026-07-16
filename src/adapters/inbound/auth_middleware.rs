@@ -31,36 +31,27 @@ impl IntoResponse for AuthErrorResponse {
 impl FromRequestParts<AppState> for AuthenticatedUser {
     type Rejection = AuthErrorResponse;
 
-    fn from_request_parts<'life0, 'life1, 'async_trait>(
-        parts: &'life0 mut Parts,
-        state: &'life1 AppState,
-    ) -> std::pin::Pin<
-        Box<dyn std::future::Future<Output = Result<Self, Self::Rejection>> + Send + 'async_trait>,
-    >
-    where
-        'life0: 'async_trait,
-        'life1: 'async_trait,
-        Self: 'async_trait,
-    {
-        Box::pin(async move {
-            let auth_header = parts
-                .headers
-                .get("Authorization")
-                .and_then(|v| v.to_str().ok())
-                .ok_or(AuthErrorResponse)?;
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let auth_header = parts
+            .headers
+            .get("Authorization")
+            .and_then(|v| v.to_str().ok())
+            .ok_or(AuthErrorResponse)?;
 
-            let token = auth_header
-                .strip_prefix("Bearer ")
-                .ok_or(AuthErrorResponse)?;
+        let token = auth_header
+            .strip_prefix("Bearer ")
+            .ok_or(AuthErrorResponse)?;
 
-            let claims = state
-                .jwt_service
-                .validate_access_token(token)
-                .map_err(|_| AuthErrorResponse)?;
+        let claims = state
+            .jwt_service
+            .validate_access_token(token)
+            .map_err(|_| AuthErrorResponse)?;
 
-            Ok(AuthenticatedUser {
-                user_id: claims.sub,
-            })
+        Ok(AuthenticatedUser {
+            user_id: claims.sub,
         })
     }
 }
