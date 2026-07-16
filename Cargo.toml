@@ -5,7 +5,7 @@ edition = "2024"
 description = "App Home Services - User Authentication"
 
 [dependencies]
-axum = "0.7"
+axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.8", features = ["postgres", "uuid", "runtime-tokio", "chrono", "migrate"] }
 bcrypt = "0.16"
@@ -20,10 +20,12 @@ dotenvy = "0.15"
 chrono = { version = "0.4", features = ["serde"] }
 jsonwebtoken = "9"
 async-trait = "0.1"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.7", features = ["cors"] }
 redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
 metrics = "0.23"
 metrics-exporter-prometheus = "0.15"
+utoipa = { version = "5.5", features = ["uuid", "preserve_path_order"] }
+utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [dev-dependencies]
 tokio-test = "0.4"

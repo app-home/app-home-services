@@ -71,6 +71,17 @@ User authentication service supporting local password login, Google OAuth, sessi
 | GET | `/api/health` | No | Health check |
 | GET | `/metrics` | No | Prometheus metrics (see Metrics & Alerting below) |
 
+### API Documentation (OpenAPI / Swagger)
+
+The service exposes an auto-generated OpenAPI 3.x specification and an interactive Swagger UI:
+
+| Resource | URL |
+| ---------- | ----- |
+| Swagger UI | `http://localhost:3000/swagger-ui` |
+| OpenAPI JSON | `http://localhost:3000/api-docs/openapi.json` |
+
+The specification is generated from code via `utoipa` and stays in sync with the implementation. All auth endpoints, request/response schemas, status codes, and the Bearer JWT security scheme are documented. Run `cargo test` to validate spec coverage and consistency with the Markdown contracts under `specs/*/contracts/`.
+
 ### Login Responses
 
 Successful login returns:
@@ -233,7 +244,7 @@ See `Get-Help .\scripts\test-with-podman.ps1` for full details.
 
 The service exposes a Prometheus-compatible metrics endpoint:
 
-```
+```text
 GET /metrics
 ```
 

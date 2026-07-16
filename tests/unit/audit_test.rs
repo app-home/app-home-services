@@ -12,11 +12,8 @@ fn test_new_user_action_login() {
 #[test]
 fn test_new_user_action_logout() {
     let session_id = uuid::Uuid::now_v7();
-    let action = NewUserAction::new_logout(
-        uuid::Uuid::now_v7(),
-        session_id,
-        "password".to_string(),
-    );
+    let action =
+        NewUserAction::new_logout(uuid::Uuid::now_v7(), session_id, "password".to_string());
 
     assert_eq!(action.event_type, "logout");
     assert_eq!(action.session_id, Some(session_id));
@@ -26,11 +23,8 @@ fn test_new_user_action_logout() {
 #[test]
 fn test_new_user_action_refresh() {
     let session_id = uuid::Uuid::now_v7();
-    let action = NewUserAction::new_refresh(
-        uuid::Uuid::now_v7(),
-        session_id,
-        "google_oauth".to_string(),
-    );
+    let action =
+        NewUserAction::new_refresh(uuid::Uuid::now_v7(), session_id, "google_oauth".to_string());
 
     assert_eq!(action.event_type, "refresh");
     assert_eq!(action.session_id, Some(session_id));

@@ -56,10 +56,10 @@ impl JwksCache {
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<(jsonwebtoken::jwk::JwkSet, Duration), AuthError>>,
     {
-        if let Some(cached) = self.inner.read().await.as_ref() {
-            if cached.expires_at > Instant::now() {
-                return Ok(cached.jwks.clone());
-            }
+        if let Some(cached) = self.inner.read().await.as_ref()
+            && cached.expires_at > Instant::now()
+        {
+            return Ok(cached.jwks.clone());
         }
 
         match fetch().await {

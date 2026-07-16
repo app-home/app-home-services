@@ -43,10 +43,7 @@ fn trusted_proxy_forwarded_for_is_used() {
     let trusted = vec![ip(10, 0, 0, 1)];
     let proxy_peer = ip(10, 0, 0, 1);
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "X-Forwarded-For",
-        "203.0.113.7, 10.0.0.1".parse().unwrap(),
-    );
+    headers.insert("X-Forwarded-For", "203.0.113.7, 10.0.0.1".parse().unwrap());
 
     let resolved = resolve_client_ip(proxy_peer, &headers, &trusted);
 

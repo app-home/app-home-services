@@ -21,10 +21,7 @@ async fn test_startup_fails_on_unreachable_redis() {
     let output = Command::new("cargo")
         .args(["run", "--quiet"])
         .env("DATABASE_URL", database_url)
-        .env(
-            "JWT_SECRET",
-            "test-secret-that-is-at-least-32-bytes-long",
-        )
+        .env("JWT_SECRET", "test-secret-that-is-at-least-32-bytes-long")
         .env("DEFAULT_USER_PASSWORD", "irrelevant-for-this-test")
         // Port 1 is a privileged port very unlikely to have anything listening on it,
         // so the connection attempt fails fast rather than needing a timeout to elapse.

@@ -1,23 +1,43 @@
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use serde::Deserialize;
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::AppState;
 use crate::adapters::inbound::auth_middleware::AuthenticatedUser;
+use crate::adapters::inbound::responses::{ErrorResponse, StatusResponse};
 use crate::application::use_cases::logout;
 use crate::application::use_cases::record_audit_entry;
 use crate::domain::errors::AuthError;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct LogoutRequest {
+    #[schema(example = "018f9a8b-7c3d-4e5f-8a1b-2c3d4e5f6a7b")]
     session_id: Uuid,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/logout",
+    request_body = LogoutRequest,
+    security(("bearer_jwt" = [])),
+    responses(
+        (status = 200, description = "Logout successful", body = StatusResponse),
+        (status = 400, description = "Invalid session", body = ErrorResponse),
+        (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    ),
+)]
 pub async fn logout_handler(
     auth_user: AuthenticatedUser,
     State(state): State<AppState>,
     Json(req): Json<LogoutRequest>,
-) -> impl IntoResponse {
+) -> Response {
     match logout::logout(
         &state.session_repo,
         &state.user_repo,
@@ -43,21 +63,30 @@ pub async fn logout_handler(
 
             (
                 StatusCode::OK,
-                Json(serde_json::json!({"status": "logged_out"})),
+                Json(StatusResponse {
+                    status: "logged_out".into(),
+                }),
             )
+                .into_response()
         }
         Err(
             AuthError::SessionNotFound | AuthError::SessionInvalidated | AuthError::SessionExpired,
         ) => (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "Invalid session"})),
-        ),
+            Json(ErrorResponse {
+                error: "Invalid session".into(),
+            }),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!(error = %e, "Logout error");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Internal server error"})),
+                Json(ErrorResponse {
+                    error: "Internal server error".into(),
+                }),
             )
+                .into_response()
         }
     }
 }
