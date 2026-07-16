@@ -66,8 +66,10 @@ fn username_not_found_and_wrong_password_take_similar_time() {
         || verify_password_timing_safe(Some(&existing_user), "wrong-password"),
         false,
     );
-    let not_found_avg =
-        average_duration(|| verify_password_timing_safe(None, "wrong-password"), false);
+    let not_found_avg = average_duration(
+        || verify_password_timing_safe(None, "wrong-password"),
+        false,
+    );
 
     assert_similar_timing(
         "wrong password (user exists)",
@@ -109,10 +111,7 @@ fn correct_password_still_verifies_successfully() {
     let real_hash = bcrypt::hash("correct-password", bcrypt::DEFAULT_COST).unwrap();
     let user = make_user(Some(real_hash));
 
-    assert!(verify_password_timing_safe(
-        Some(&user),
-        "correct-password"
-    ));
+    assert!(verify_password_timing_safe(Some(&user), "correct-password"));
     assert!(!verify_password_timing_safe(Some(&user), "wrong-password"));
     assert!(!verify_password_timing_safe(None, "correct-password"));
 }

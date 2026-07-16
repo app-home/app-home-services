@@ -4,45 +4,64 @@ use axum::{
     Json,
     extract::{ConnectInfo, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::adapters::inbound::login_routes::resolve_client_ip;
+use crate::adapters::inbound::responses::{ErrorResponse, RefreshResponse};
 use crate::application::use_cases::record_audit_entry;
 use crate::application::use_cases::refresh_token;
 use crate::domain::errors::AuthError;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct RefreshTokenRequest {
+    #[schema(min_length = 1, example = "eyJhbGciOiJIUzI1NiIs...placeholder")]
     refresh_token: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/refresh",
+    request_body = RefreshTokenRequest,
+    responses(
+        (status = 200, description = "Token refreshed", body = RefreshResponse),
+        (status = 401, description = "Invalid or expired refresh token", body = ErrorResponse),
+        (status = 422, description = "Validation error", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    ),
+)]
 pub async fn refresh_token_handler(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     Json(req): Json<RefreshTokenRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let ip: IpAddr = resolve_client_ip(peer.ip(), &headers, &state.settings.trusted_proxy_ips);
 
     if !state.refresh_rate_limiter.check(ip).await {
         tracing::warn!(%ip, "Refresh rate limit exceeded");
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(
-                serde_json::json!({"error": "Too many refresh attempts. Please try again later."}),
-            ),
-        );
+            Json(ErrorResponse {
+                error: "Too many refresh attempts. Please try again later.".into(),
+            }),
+        )
+            .into_response();
     }
     state.refresh_rate_limiter.record_attempt(ip).await;
 
     if req.refresh_token.is_empty() {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "refresh_token is required"})),
-        );
+            Json(ErrorResponse {
+                error: "refresh_token is required".into(),
+            }),
+        )
+            .into_response();
     }
 
     match refresh_token::refresh_token(
@@ -73,24 +92,34 @@ pub async fn refresh_token_handler(
 
             (
                 StatusCode::OK,
-                Json(serde_json::json!({
-                    "access_token": result.access_token,
-                    "refresh_token": result.refresh_token
-                })),
+                Json(RefreshResponse {
+                    access_token: result.access_token,
+                    refresh_token: result.refresh_token,
+                }),
             )
+                .into_response()
         }
         Err(AuthError::InvalidRefreshToken) => (
             StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Invalid or expired refresh token"})),
-        ),
+            Json(ErrorResponse {
+                error: "Invalid or expired refresh token".into(),
+            }),
+        )
+            .into_response(),
         Err(AuthError::TokenVerificationFailed) => (
             StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Invalid refresh token"})),
-        ),
+            Json(ErrorResponse {
+                error: "Invalid refresh token".into(),
+            }),
+        )
+            .into_response(),
         Err(AuthError::SessionExpired | AuthError::SessionInvalidated) => (
             StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Session has expired"})),
-        ),
+            Json(ErrorResponse {
+                error: "Session has expired".into(),
+            }),
+        )
+            .into_response(),
         // A missing session is an expected client-side outcome (e.g. the session was
         // deleted, or a token references a session id that no longer exists) -- not
         // an internal failure. Treat it the same as an invalid refresh token rather
@@ -98,14 +127,20 @@ pub async fn refresh_token_handler(
         // to clients and pollutes error-rate monitoring with tracing::error! noise.
         Err(AuthError::SessionNotFound) => (
             StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Invalid or expired refresh token"})),
-        ),
+            Json(ErrorResponse {
+                error: "Invalid or expired refresh token".into(),
+            }),
+        )
+            .into_response(),
         Err(e) => {
             tracing::error!(error = %e, "Token refresh error");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Internal server error"})),
+                Json(ErrorResponse {
+                    error: "Internal server error".into(),
+                }),
             )
+                .into_response()
         }
     }
 }

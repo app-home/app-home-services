@@ -3,8 +3,11 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 use axum::routing::{get, post};
+use utoipa::OpenApi;
 
 use app_home_services::AppState;
+use app_home_services::adapters::inbound::api_doc::ApiDoc;
+use app_home_services::adapters::inbound::health_routes::health_check;
 use app_home_services::adapters::inbound::login_routes::login_password_handler;
 use app_home_services::adapters::inbound::logout_routes::logout_handler;
 use app_home_services::adapters::inbound::oauth_callback::login_google_handler;
@@ -17,6 +20,7 @@ use app_home_services::infrastructure::config::settings::Settings;
 use app_home_services::infrastructure::rate_limiter_setup::{
     RateLimiterErrorCounters, build_rate_limiters,
 };
+use utoipa_swagger_ui::SwaggerUi;
 
 #[tokio::main]
 async fn main() {
@@ -27,7 +31,8 @@ async fn main() {
 
     // Installed once, up front, before anything below records a metric -- the
     // metrics::counter!/gauge! macros are no-ops until a recorder is installed.
-    let metrics_handle = app_home_services::infrastructure::telemetry::metrics::install_prometheus_recorder();
+    let metrics_handle =
+        app_home_services::infrastructure::telemetry::metrics::install_prometheus_recorder();
 
     let settings = Settings::from_env().expect("Failed to load settings");
 
@@ -125,6 +130,7 @@ async fn main() {
             "/metrics",
             get(move || std::future::ready(metrics_handle.render())),
         )
+        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(cors)
         .with_state(state);
 
@@ -175,10 +181,6 @@ fn spawn_rate_limiter_metrics_poller(counters: RateLimiterErrorCounters) {
             }
         }
     });
-}
-
-async fn health_check() -> axum::Json<serde_json::Value> {
-    axum::Json(serde_json::json!({"status": "ok"}))
 }
 
 async fn seed_default_user(pool: &sqlx::PgPool, settings: &Settings) -> Result<bool, String> {

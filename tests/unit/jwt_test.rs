@@ -86,8 +86,12 @@ fn test_multiple_pairs_with_different_users_are_unique() {
     let service = create_service();
     let session_id = Uuid::now_v7();
 
-    let pair1 = service.generate_token_pair(Uuid::now_v7(), session_id).unwrap();
-    let pair2 = service.generate_token_pair(Uuid::now_v7(), session_id).unwrap();
+    let pair1 = service
+        .generate_token_pair(Uuid::now_v7(), session_id)
+        .unwrap();
+    let pair2 = service
+        .generate_token_pair(Uuid::now_v7(), session_id)
+        .unwrap();
 
     assert_ne!(pair1.access_token, pair2.access_token);
     assert_ne!(pair1.refresh_token, pair2.refresh_token);

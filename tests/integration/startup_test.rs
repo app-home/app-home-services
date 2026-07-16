@@ -15,10 +15,7 @@ async fn test_startup_fails_on_unreachable_db() {
         // Must be >= MIN_JWT_SECRET_LEN (see settings.rs / issue #14) so this test
         // exercises the DB-unreachable failure path specifically, rather than
         // failing earlier at JWT_SECRET strength validation.
-        .env(
-            "JWT_SECRET",
-            "test-secret-that-is-at-least-32-bytes-long",
-        )
+        .env("JWT_SECRET", "test-secret-that-is-at-least-32-bytes-long")
         .env("DATABASE_URL", "postgres://invalid:5432/unreachable")
         .output()
         .expect("Failed to run cargo");
@@ -31,7 +28,8 @@ async fn test_startup_fails_on_unreachable_db() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("Default user check failed") || stderr.contains("Failed to create database pool"),
+        stderr.contains("Default user check failed")
+            || stderr.contains("Failed to create database pool"),
         "Should log a startup failure message, got: {stderr}"
     );
 }

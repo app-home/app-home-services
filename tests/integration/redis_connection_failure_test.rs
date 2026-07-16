@@ -129,7 +129,10 @@ impl RedisTestContainer {
             .status()
             .expect("failed to run `podman kill`");
 
-        assert!(status.success(), "`podman kill` failed on the test container");
+        assert!(
+            status.success(),
+            "`podman kill` failed on the test container"
+        );
     }
 }
 

@@ -58,11 +58,10 @@ async fn test_user_actions_table_exists() {
 async fn test_seed_user_exists() {
     let pool = get_test_pool().await;
 
-    let user: Result<(String, String), sqlx::Error> = sqlx::query_as(
-        "SELECT username, email FROM users WHERE auth_provider = 'local' LIMIT 1",
-    )
-    .fetch_one(pool)
-    .await;
+    let user: Result<(String, String), sqlx::Error> =
+        sqlx::query_as("SELECT username, email FROM users WHERE auth_provider = 'local' LIMIT 1")
+            .fetch_one(pool)
+            .await;
 
     assert!(user.is_ok(), "A seeded local user should exist");
     let (username, email) = user.unwrap();

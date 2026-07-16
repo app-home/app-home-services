@@ -1,25 +1,47 @@
-use axum::{Json, extract::State, http::StatusCode, response::IntoResponse};
+use axum::{
+    Json,
+    extract::State,
+    http::StatusCode,
+    response::{IntoResponse, Response},
+};
 use serde::Deserialize;
+use utoipa::ToSchema;
 
 use crate::AppState;
+use crate::adapters::inbound::responses::{ErrorResponse, GoogleAuthResponse};
 use crate::application::use_cases::login_with_google;
 use crate::application::use_cases::record_audit_entry;
 use crate::domain::errors::AuthError;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct GoogleLoginRequest {
+    #[schema(min_length = 1, example = "eyJhbGciOiJSUzI1NiIs...placeholder")]
     id_token: String,
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/login/google",
+    request_body = GoogleLoginRequest,
+    responses(
+        (status = 200, description = "Google login successful", body = GoogleAuthResponse),
+        (status = 401, description = "Token verification failed", body = ErrorResponse),
+        (status = 422, description = "Validation error", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    ),
+)]
 pub async fn login_google_handler(
     State(state): State<AppState>,
     Json(req): Json<GoogleLoginRequest>,
-) -> impl IntoResponse {
+) -> Response {
     if req.id_token.is_empty() {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "ID token is required"})),
-        );
+            Json(ErrorResponse {
+                error: "ID token is required".into(),
+            }),
+        )
+            .into_response();
     }
 
     match login_with_google::login_with_google(
@@ -54,28 +76,35 @@ pub async fn login_google_handler(
 
             (
                 StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "authenticated",
-                    "user_id": result.user.id.to_string(),
-                    "access_token": result.access_token,
-                    "refresh_token": result.refresh_token,
-                    "is_new_user": result.is_new_user
-                })),
+                Json(GoogleAuthResponse {
+                    status: "authenticated".into(),
+                    user_id: result.user.id.to_string(),
+                    access_token: result.access_token,
+                    refresh_token: result.refresh_token,
+                    is_new_user: result.is_new_user,
+                }),
             )
+                .into_response()
         }
         Err(AuthError::TokenVerificationFailed) => {
             tracing::warn!("Google token verification failed");
             (
                 StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "Authentication failed"})),
+                Json(ErrorResponse {
+                    error: "Authentication failed".into(),
+                }),
             )
+                .into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "Google login error");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Internal server error"})),
+                Json(ErrorResponse {
+                    error: "Internal server error".into(),
+                }),
             )
+                .into_response()
         }
     }
 }

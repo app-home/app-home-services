@@ -4,18 +4,22 @@ use axum::{
     Json,
     extract::{ConnectInfo, State},
     http::StatusCode,
-    response::IntoResponse,
+    response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use utoipa::ToSchema;
 
 use crate::AppState;
+use crate::adapters::inbound::responses::{AuthTokensResponse, ErrorResponse};
 use crate::application::use_cases::login_with_password;
 use crate::application::use_cases::record_audit_entry;
 use crate::domain::errors::AuthError;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, ToSchema)]
 pub struct PasswordLoginRequest {
+    #[schema(min_length = 1, example = "jdoe")]
     username: String,
+    #[schema(min_length = 1, example = "hunter2")]
     password: String,
 }
 
@@ -56,22 +60,35 @@ pub fn resolve_client_ip(
     peer_ip
 }
 
+#[utoipa::path(
+    post,
+    path = "/api/auth/login/password",
+    request_body = PasswordLoginRequest,
+    responses(
+        (status = 200, description = "Login successful", body = AuthTokensResponse),
+        (status = 401, description = "Invalid credentials", body = ErrorResponse),
+        (status = 422, description = "Validation error", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
+    ),
+)]
 pub async fn login_password_handler(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     Json(req): Json<PasswordLoginRequest>,
-) -> impl IntoResponse {
+) -> Response {
     let ip = resolve_client_ip(peer.ip(), &headers, &state.settings.trusted_proxy_ips);
 
     if !state.rate_limiter.check(ip).await {
         tracing::warn!(%ip, "Rate limit exceeded");
         return (
             StatusCode::TOO_MANY_REQUESTS,
-            Json(
-                serde_json::json!({"error": "Too many login attempts. Please try again later."}),
-            ),
-        );
+            Json(ErrorResponse {
+                error: "Too many login attempts. Please try again later.".into(),
+            }),
+        )
+            .into_response();
     }
     state.rate_limiter.record_attempt(ip).await;
 
@@ -79,8 +96,11 @@ pub async fn login_password_handler(
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
-            Json(serde_json::json!({"error": "Username and password are required"})),
-        );
+            Json(ErrorResponse {
+                error: "Username and password are required".into(),
+            }),
+        )
+            .into_response();
     }
 
     match login_with_password::login_with_password(
@@ -112,29 +132,36 @@ pub async fn login_password_handler(
 
             (
                 StatusCode::OK,
-                Json(serde_json::json!({
-                    "status": "authenticated",
-                    "user_id": result.user.id.to_string(),
-                    "access_token": result.access_token,
-                    "refresh_token": result.refresh_token
-                })),
+                Json(AuthTokensResponse {
+                    status: "authenticated".into(),
+                    user_id: result.user.id.to_string(),
+                    access_token: result.access_token,
+                    refresh_token: result.refresh_token,
+                }),
             )
+                .into_response()
         }
         Err(AuthError::InvalidCredentials) => {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             tracing::warn!(username = %req.username, "Invalid login attempt");
             (
                 StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "Invalid username or password"})),
+                Json(ErrorResponse {
+                    error: "Invalid username or password".into(),
+                }),
             )
+                .into_response()
         }
         Err(e) => {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             tracing::error!(error = %e, "Login error");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "Internal server error"})),
+                Json(ErrorResponse {
+                    error: "Internal server error".into(),
+                }),
             )
+                .into_response()
         }
     }
 }

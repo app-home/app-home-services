@@ -40,8 +40,14 @@ pub struct RateLimiterErrorCounters {
 /// spawning the whole service.
 pub async fn build_rate_limiters(
     settings: &Settings,
-) -> Result<(Arc<dyn RateLimiter>, Arc<dyn RateLimiter>, RateLimiterErrorCounters), redis::RedisError>
-{
+) -> Result<
+    (
+        Arc<dyn RateLimiter>,
+        Arc<dyn RateLimiter>,
+        RateLimiterErrorCounters,
+    ),
+    redis::RedisError,
+> {
     match &settings.redis_url {
         Some(redis_url) => {
             let login_limiter = RedisRateLimiter::connect(

@@ -1,4 +1,5 @@
 use axum::{
+    Json,
     extract::FromRequestParts,
     http::{StatusCode, request::Parts},
     response::{IntoResponse, Response},
@@ -6,6 +7,7 @@ use axum::{
 use uuid::Uuid;
 
 use crate::AppState;
+use crate::adapters::inbound::responses::ErrorResponse;
 use crate::application::ports::jwt_service::JwtService;
 
 pub struct AuthenticatedUser {
@@ -16,7 +18,13 @@ pub struct AuthErrorResponse;
 
 impl IntoResponse for AuthErrorResponse {
     fn into_response(self) -> Response {
-        (StatusCode::UNAUTHORIZED, "Unauthorized").into_response()
+        (
+            StatusCode::UNAUTHORIZED,
+            Json(ErrorResponse {
+                error: "Unauthorized".into(),
+            }),
+        )
+            .into_response()
     }
 }
 
