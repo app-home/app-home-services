@@ -244,7 +244,7 @@ See `Get-Help .\scripts\test-with-podman.ps1` for full details.
 
 The service exposes a Prometheus-compatible metrics endpoint:
 
-```
+```text
 GET /metrics
 ```
 
