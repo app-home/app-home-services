@@ -15,6 +15,10 @@ use crate::adapters::inbound::responses::{
 
 #[derive(OpenApi)]
 #[openapi(
+    info(description = "Authentication service API"),
+    servers(
+        (url = "http://localhost:3000", description = "Local development"),
+    ),
     paths(
         login_password_handler,
         login_google_handler,
