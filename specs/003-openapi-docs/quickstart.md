@@ -12,6 +12,17 @@ rather than duplicating them.
 - PostgreSQL reachable via `DATABASE_URL` (see `.env.example`). Redis optional (see rate-limiter notes).
 - A populated `.env` (copy from `.env.example`).
 
+## Accessing the Documentation
+
+Once the service is running:
+
+| Resource | URL |
+|----------|-----|
+| Swagger UI | `http://localhost:3000/swagger-ui` |
+| OpenAPI JSON | `http://localhost:3000/api-docs/openapi.json` |
+
+> The default port is `3000` (configurable via `SERVER_PORT` in `.env`).
+
 ## 1. Build & static checks
 
 ```powershell
@@ -33,7 +44,7 @@ Expected log line: `Listening` with the configured address.
 ## 3. Fetch the machine-readable spec
 
 ```powershell
-curl http://localhost:8080/api-docs/openapi.json -o openapi.json
+curl http://localhost:3000/api-docs/openapi.json -o openapi.json
 ```
 
 Expected: HTTP 200, `application/json`. The document satisfies the content guarantees in
@@ -52,7 +63,7 @@ Expected: zero structural errors (SC-003).
 Navigate a browser to:
 
 ```
-http://localhost:8080/swagger-ui
+http://localhost:3000/swagger-ui
 ```
 
 Expected:
