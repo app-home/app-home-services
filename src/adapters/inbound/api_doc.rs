@@ -46,7 +46,10 @@ struct SecurityAddon;
 
 impl Modify for SecurityAddon {
     fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
-        let components = openapi.components.as_mut().unwrap();
+        let components = openapi
+            .components
+            .as_mut()
+            .expect("ApiDoc defines components/schemas, so this should never be None");
         components.add_security_scheme(
             "bearer_jwt",
             SecurityScheme::Http(
