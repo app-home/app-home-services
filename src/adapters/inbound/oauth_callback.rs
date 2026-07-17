@@ -13,9 +13,11 @@ use crate::application::use_cases::login_with_google;
 use crate::application::use_cases::record_audit_entry;
 use crate::domain::errors::AuthError;
 
+const MAX_ID_TOKEN_LEN: usize = 16384;
+
 #[derive(Deserialize, ToSchema)]
 pub struct GoogleLoginRequest {
-    #[schema(min_length = 1, example = "eyJhbGciOiJSUzI1NiIs...placeholder")]
+    #[schema(min_length = 1, max_length = 16384, example = "eyJhbGciOiJSUzI1NiIs...placeholder")]
     id_token: String,
 }
 
@@ -34,11 +36,11 @@ pub async fn login_google_handler(
     State(state): State<AppState>,
     Json(req): Json<GoogleLoginRequest>,
 ) -> Response {
-    if req.id_token.is_empty() {
+    if req.id_token.is_empty() || req.id_token.len() > MAX_ID_TOKEN_LEN {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorResponse {
-                error: "ID token is required".into(),
+                error: "ID token is required and must not exceed 16384 characters".into(),
             }),
         )
             .into_response();

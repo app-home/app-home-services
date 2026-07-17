@@ -15,6 +15,12 @@ pub trait RateLimiter: Send + Sync {
     async fn check(&self, ip: IpAddr) -> bool;
     /// Records a new attempt for the given IP.
     async fn record_attempt(&self, ip: IpAddr);
+    /// Atomically checks whether `ip` is within budget AND increments the
+    /// counter. Returns `true` if the request is allowed, `false` if the IP
+    /// has been rate-limited. Replaces the caller-side pattern of `check()` +
+    /// (eventually) `record_attempt()`, eliminating the TOCTOU race between
+    /// the two calls.
+    async fn try_check_and_record(&self, ip: IpAddr) -> bool;
     /// Returns how many attempts the given IP has left in the current window.
     async fn remaining_attempts(&self, ip: IpAddr) -> u32;
     /// Clears the counter for the given IP (e.g. after a successful login).

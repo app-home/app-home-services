@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use tracing::error;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
@@ -16,7 +17,13 @@ pub struct User {
 impl User {
     pub fn verify_password(&self, password: &str) -> bool {
         match &self.password_hash {
-            Some(hash) => bcrypt::verify(password, hash).unwrap_or(false),
+            Some(hash) => match bcrypt::verify(password, hash) {
+                Ok(valid) => valid,
+                Err(e) => {
+                    error!(error = %e, "bcrypt::verify failed for user password hash");
+                    false
+                }
+            },
             None => false,
         }
     }

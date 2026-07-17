@@ -16,9 +16,11 @@ use crate::application::use_cases::record_audit_entry;
 use crate::application::use_cases::refresh_token;
 use crate::domain::errors::AuthError;
 
+const MAX_REFRESH_TOKEN_LEN: usize = 8192;
+
 #[derive(Deserialize, ToSchema)]
 pub struct RefreshTokenRequest {
-    #[schema(min_length = 1, example = "eyJhbGciOiJIUzI1NiIs...placeholder")]
+    #[schema(min_length = 1, max_length = 8192, example = "eyJhbGciOiJIUzI1NiIs...placeholder")]
     refresh_token: String,
 }
 
@@ -42,7 +44,17 @@ pub async fn refresh_token_handler(
 ) -> Response {
     let ip: IpAddr = resolve_client_ip(peer.ip(), &headers, &state.settings.trusted_proxy_ips);
 
-    if !state.refresh_rate_limiter.check(ip).await {
+    if req.refresh_token.is_empty() || req.refresh_token.len() > MAX_REFRESH_TOKEN_LEN {
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "refresh_token is required and must not exceed 8192 characters".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    if !state.refresh_rate_limiter.try_check_and_record(ip).await {
         tracing::warn!(%ip, "Refresh rate limit exceeded");
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -52,18 +64,6 @@ pub async fn refresh_token_handler(
         )
             .into_response();
     }
-
-    if req.refresh_token.is_empty() {
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ErrorResponse {
-                error: "refresh_token is required".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    state.refresh_rate_limiter.record_attempt(ip).await;
 
     match refresh_token::refresh_token(
         &state.session_repo,

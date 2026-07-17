@@ -103,7 +103,7 @@ mod tests {
     fn settings_with_redis_url(redis_url: Option<String>) -> Settings {
         Settings {
             database_url: String::new(),
-            server_host: "0.0.0.0".to_string(),
+            server_host: "127.0.0.1".to_string(),
             server_port: 3000,
             default_user_username: "admin".to_string(),
             default_user_password: "irrelevant".to_string(),

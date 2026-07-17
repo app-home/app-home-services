@@ -79,6 +79,12 @@ async fn main() {
 
     spawn_rate_limiter_metrics_poller(rate_limiter_error_counters);
 
+    if settings.server_host == "0.0.0.0" {
+        tracing::warn!(
+            "Binding to 0.0.0.0 exposes the /metrics endpoint (no auth) and all API routes on every network interface; set SERVER_HOST=127.0.0.1 if this is unintended"
+        );
+    }
+
     let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
     let state = AppState::new(

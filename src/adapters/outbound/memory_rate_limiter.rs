@@ -81,6 +81,31 @@ impl RateLimiter for MemoryRateLimiter {
         }
     }
 
+    async fn try_check_and_record(&self, ip: IpAddr) -> bool {
+        let mut entries = self.entries.lock().await;
+        self.clean_expired(&mut entries);
+        let now = Instant::now();
+
+        let entry = entries.entry(ip).or_insert(RateLimitEntry {
+            attempts: 0,
+            window_start: now,
+        });
+
+        let elapsed = now.duration_since(entry.window_start);
+        if elapsed >= self.window_duration {
+            entry.attempts = 1;
+            entry.window_start = now;
+            return true;
+        }
+
+        if entry.attempts < self.max_attempts {
+            entry.attempts += 1;
+            true
+        } else {
+            false
+        }
+    }
+
     async fn remaining_attempts(&self, ip: IpAddr) -> u32 {
         let entries = self.entries.lock().await;
         match entries.get(&ip) {
