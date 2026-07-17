@@ -7,7 +7,7 @@ description = "App Home Services - User Authentication"
 [dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
-sqlx = { version = "0.8", features = ["postgres", "uuid", "runtime-tokio", "chrono", "migrate"] }
+sqlx = { version = "0.9", features = ["postgres", "uuid", "runtime-tokio", "chrono", "migrate"] }
 bcrypt = "0.16"
 uuid = { version = "1", features = ["v7", "serde"] }
 tracing = "0.1"
