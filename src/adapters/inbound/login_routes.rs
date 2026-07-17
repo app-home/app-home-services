@@ -90,7 +90,6 @@ pub async fn login_password_handler(
         )
             .into_response();
     }
-    state.rate_limiter.record_attempt(ip).await;
 
     if req.username.is_empty() || req.password.is_empty() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -102,6 +101,8 @@ pub async fn login_password_handler(
         )
             .into_response();
     }
+
+    state.rate_limiter.record_attempt(ip).await;
 
     match login_with_password::login_with_password(
         &state.user_repo,

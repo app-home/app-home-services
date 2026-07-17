@@ -1,9 +1,9 @@
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
+use tokio::sync::Mutex;
 
 use crate::application::ports::rate_limiter::RateLimiter;
 
@@ -47,7 +47,7 @@ impl MemoryRateLimiter {
 #[async_trait]
 impl RateLimiter for MemoryRateLimiter {
     async fn check(&self, ip: IpAddr) -> bool {
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.lock().await;
         self.clean_expired(&mut entries);
 
         match entries.get(&ip) {
@@ -64,7 +64,7 @@ impl RateLimiter for MemoryRateLimiter {
     }
 
     async fn record_attempt(&self, ip: IpAddr) {
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.lock().await;
         let now = Instant::now();
 
         let entry = entries.entry(ip).or_insert(RateLimitEntry {
@@ -82,7 +82,7 @@ impl RateLimiter for MemoryRateLimiter {
     }
 
     async fn remaining_attempts(&self, ip: IpAddr) -> u32 {
-        let entries = self.entries.lock().unwrap();
+        let entries = self.entries.lock().await;
         match entries.get(&ip) {
             Some(entry) => {
                 let elapsed = Instant::now().duration_since(entry.window_start);
@@ -97,7 +97,7 @@ impl RateLimiter for MemoryRateLimiter {
     }
 
     async fn reset(&self, ip: IpAddr) {
-        let mut entries = self.entries.lock().unwrap();
+        let mut entries = self.entries.lock().await;
         entries.remove(&ip);
     }
 }

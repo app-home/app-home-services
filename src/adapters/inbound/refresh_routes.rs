@@ -52,7 +52,6 @@ pub async fn refresh_token_handler(
         )
             .into_response();
     }
-    state.refresh_rate_limiter.record_attempt(ip).await;
 
     if req.refresh_token.is_empty() {
         return (
@@ -63,6 +62,8 @@ pub async fn refresh_token_handler(
         )
             .into_response();
     }
+
+    state.refresh_rate_limiter.record_attempt(ip).await;
 
     match refresh_token::refresh_token(
         &state.session_repo,
