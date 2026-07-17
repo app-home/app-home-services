@@ -15,11 +15,14 @@ use crate::application::use_cases::login_with_password;
 use crate::application::use_cases::record_audit_entry;
 use crate::domain::errors::AuthError;
 
+const MAX_USERNAME_LEN: usize = 256;
+const MAX_PASSWORD_LEN: usize = 4096;
+
 #[derive(Deserialize, ToSchema)]
 pub struct PasswordLoginRequest {
-    #[schema(min_length = 1, example = "jdoe")]
+    #[schema(min_length = 1, max_length = 256, example = "jdoe")]
     username: String,
-    #[schema(min_length = 1, example = "hunter2")]
+    #[schema(min_length = 1, max_length = 4096, example = "hunter2")]
     password: String,
 }
 
@@ -80,7 +83,20 @@ pub async fn login_password_handler(
 ) -> Response {
     let ip = resolve_client_ip(peer.ip(), &headers, &state.settings.trusted_proxy_ips);
 
-    if !state.rate_limiter.check(ip).await {
+    if req.username.is_empty() || req.password.is_empty()
+        || req.username.len() > MAX_USERNAME_LEN || req.password.len() > MAX_PASSWORD_LEN
+    {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        return (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ErrorResponse {
+                error: "Username and password are required and must not exceed 256 and 4096 characters respectively".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    if !state.rate_limiter.try_check_and_record(ip).await {
         tracing::warn!(%ip, "Rate limit exceeded");
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -90,19 +106,6 @@ pub async fn login_password_handler(
         )
             .into_response();
     }
-
-    if req.username.is_empty() || req.password.is_empty() {
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        return (
-            StatusCode::UNPROCESSABLE_ENTITY,
-            Json(ErrorResponse {
-                error: "Username and password are required".into(),
-            }),
-        )
-            .into_response();
-    }
-
-    state.rate_limiter.record_attempt(ip).await;
 
     match login_with_password::login_with_password(
         &state.user_repo,

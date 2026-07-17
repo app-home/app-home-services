@@ -8,6 +8,7 @@ use crate::application::ports::user_repository::UserRepository;
 use crate::domain::entities::session::NewSession;
 use crate::domain::entities::user::User;
 use crate::domain::errors::AuthError;
+use tracing::error;
 
 pub struct LoginResult {
     pub user: User,
@@ -27,9 +28,18 @@ pub struct LoginResult {
 ///
 /// Computed once, lazily, at the same cost factor (`bcrypt::DEFAULT_COST`) real user
 /// password hashes use, so the dummy check costs the same as a real one.
-static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
-    bcrypt::hash("dummy-password-for-timing-safety", bcrypt::DEFAULT_COST)
-        .expect("failed to precompute dummy bcrypt hash")
+///
+/// Uses `Option` so a bcrypt failure at lazy-init time does not crash the process on
+/// the first login request -- the error is logged and a fixed 50ms sleep is used as a
+/// timing-safe fallback instead.
+static DUMMY_PASSWORD_HASH: LazyLock<Option<String>> = LazyLock::new(|| {
+    match bcrypt::hash("dummy-password-for-timing-safety", bcrypt::DEFAULT_COST) {
+        Ok(hash) => Some(hash),
+        Err(e) => {
+            error!(error = %e, "Failed to precompute dummy bcrypt hash; timing-safe fallback will use a 50ms delay");
+            None
+        }
+    }
 });
 
 /// Verifies `password` against `user`'s stored hash, always performing exactly one
@@ -38,9 +48,23 @@ static DUMMY_PASSWORD_HASH: LazyLock<String> = LazyLock::new(|| {
 /// behavior can be directly unit-tested.
 pub fn verify_password_timing_safe(user: Option<&User>, password: &str) -> bool {
     match user.and_then(|u| u.password_hash.as_deref()) {
-        Some(hash) => bcrypt::verify(password, hash).unwrap_or(false),
+        Some(hash) => match bcrypt::verify(password, hash) {
+            Ok(valid) => valid,
+            Err(e) => {
+                error!(error = %e, "bcrypt::verify failed during login");
+                false
+            }
+        },
         None => {
-            let _ = bcrypt::verify(password, DUMMY_PASSWORD_HASH.as_str());
+            match DUMMY_PASSWORD_HASH.as_deref() {
+                Some(hash) => {
+                    let _ = bcrypt::verify(password, hash);
+                }
+                None => {
+                    // Fallback timing-safe delay if bcrypt precomputation failed.
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+            }
             false
         }
     }

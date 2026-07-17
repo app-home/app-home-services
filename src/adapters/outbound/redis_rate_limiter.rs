@@ -20,6 +20,21 @@ end
 return current
 "#;
 
+/// Atomically increments AND checks whether the result is within budget,
+/// all in a single Lua call. Returns 1 (true) if the request is allowed,
+/// 0 (false) if rate-limited.
+const TRY_CHECK_AND_RECORD_SCRIPT: &str = r#"
+local current = redis.call('INCR', KEYS[1])
+if tonumber(current) == 1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[1])
+end
+if tonumber(current) <= tonumber(ARGV[2]) then
+    return 1
+else
+    return 0
+end
+"#;
+
 /// Redis-backed implementation of the `RateLimiter` port.
 ///
 /// Unlike `MemoryRateLimiter`, counters here live in Redis and are shared by every
@@ -147,6 +162,30 @@ impl RateLimiter for RedisRateLimiter {
                 scope = %self.key_prefix,
                 "Redis rate limiter: failed to record attempt"
             );
+        }
+    }
+
+    async fn try_check_and_record(&self, ip: IpAddr) -> bool {
+        let mut conn = self.conn.clone();
+        let script = redis::Script::new(TRY_CHECK_AND_RECORD_SCRIPT);
+        let result: redis::RedisResult<i64> = script
+            .key(self.key(ip))
+            .arg(self.window_seconds)
+            .arg(self.max_attempts)
+            .invoke_async(&mut conn)
+            .await;
+
+        match result {
+            Ok(allowed) => allowed != 0,
+            Err(e) => {
+                self.record_redis_error();
+                tracing::error!(
+                    error = %e,
+                    scope = %self.key_prefix,
+                    "Redis rate limiter: try_check_and_record failed, failing open"
+                );
+                true
+            }
         }
     }
 

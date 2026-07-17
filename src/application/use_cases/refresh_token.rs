@@ -1,3 +1,4 @@
+use tracing::error;
 use uuid::Uuid;
 
 use crate::application::ports::jwt_service::JwtService;
@@ -52,8 +53,13 @@ pub async fn refresh_token(
         return Err(AuthError::SessionExpired);
     }
 
-    let is_valid_refresh =
-        bcrypt::verify(refresh_token, &session.refresh_token_hash).unwrap_or(false);
+    let is_valid_refresh = match bcrypt::verify(refresh_token, &session.refresh_token_hash) {
+        Ok(valid) => valid,
+        Err(e) => {
+            error!(error = %e, "bcrypt::verify failed for refresh token hash");
+            false
+        }
+    };
     if !is_valid_refresh {
         return Err(AuthError::InvalidRefreshToken);
     }

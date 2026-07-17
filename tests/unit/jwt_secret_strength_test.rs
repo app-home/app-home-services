@@ -35,7 +35,9 @@ fn rejects_a_secret_one_byte_under_the_minimum() {
 
 #[test]
 fn accepts_a_secret_exactly_at_the_minimum() {
-    let secret = "a".repeat(MIN_JWT_SECRET_LEN);
+    // 32 bytes
+    let secret = "abcdefghijklmnopqrstuvwxyz123456".to_string();
+    assert_eq!(secret.len(), MIN_JWT_SECRET_LEN);
 
     let result = validate_jwt_secret(&secret);
 
@@ -48,8 +50,9 @@ fn accepts_a_secret_exactly_at_the_minimum() {
 #[test]
 fn accepts_a_strong_secret() {
     // Mirrors the `.env.example` recommendation of `openssl rand -hex 64` (128 hex
-    // chars / bytes as a string).
-    let secret = "f".repeat(128);
+    // chars / bytes as a string). 8 unique chars is the minimum for entropy check.
+    let secret = "abcdefgh".repeat(16);
+    assert_eq!(secret.len(), 128);
 
     let result = validate_jwt_secret(&secret);
 
