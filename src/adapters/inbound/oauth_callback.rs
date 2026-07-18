@@ -1,6 +1,8 @@
+use std::net::SocketAddr;
+
 use axum::{
     Json,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
@@ -8,6 +10,7 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::AppState;
+use crate::adapters::inbound::login_routes::resolve_client_ip;
 use crate::adapters::inbound::responses::{ErrorResponse, GoogleAuthResponse};
 use crate::application::use_cases::login_with_google;
 use crate::application::use_cases::record_audit_entry;
@@ -29,18 +32,34 @@ pub struct GoogleLoginRequest {
         (status = 200, description = "Google login successful", body = GoogleAuthResponse),
         (status = 401, description = "Token verification failed", body = ErrorResponse),
         (status = 422, description = "Validation error", body = ErrorResponse),
+        (status = 429, description = "Rate limit exceeded", body = ErrorResponse),
         (status = 500, description = "Internal server error", body = ErrorResponse),
     ),
 )]
 pub async fn login_google_handler(
     State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<GoogleLoginRequest>,
 ) -> Response {
+    let ip = resolve_client_ip(peer.ip(), &headers, &state.settings.trusted_proxy_ips);
+
     if req.id_token.is_empty() || req.id_token.len() > MAX_ID_TOKEN_LEN {
         return (
             StatusCode::UNPROCESSABLE_ENTITY,
             Json(ErrorResponse {
                 error: "ID token is required and must not exceed 16384 characters".into(),
+            }),
+        )
+            .into_response();
+    }
+
+    if !state.rate_limiter.try_check_and_record(ip).await {
+        tracing::warn!(%ip, "Google login rate limit exceeded");
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(ErrorResponse {
+                error: "Too many login attempts. Please try again later.".into(),
             }),
         )
             .into_response();
@@ -57,6 +76,8 @@ pub async fn login_google_handler(
     .await
     {
         Ok(result) => {
+            state.rate_limiter.reset(ip).await;
+
             tracing::info!(
                 user_id = %result.user.id,
                 is_new_user = result.is_new_user,
