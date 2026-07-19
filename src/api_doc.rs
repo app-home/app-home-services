@@ -25,6 +25,11 @@ use profiles::adapters::inbound::responses::{ProfileResponse, UpdateProfileReque
 #[derive(OpenApi)]
 #[openapi(
     info(description = "App Home Services API"),
+    tags(
+        (name = "Authentication", description = "Authentication & session management"),
+        (name = "Profiles", description = "User profile management"),
+        (name = "Admin", description = "Admin user management"),
+    ),
     servers(
         (url = "http://localhost:3000", description = "Local development"),
     ),

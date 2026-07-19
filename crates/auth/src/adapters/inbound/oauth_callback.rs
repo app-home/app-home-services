@@ -30,6 +30,7 @@ pub struct GoogleLoginRequest {
 #[utoipa::path(
     post,
     path = "/api/auth/login/google",
+    tag = "Authentication",
     request_body = GoogleLoginRequest,
     responses(
         (status = 200, description = "Google login successful", body = GoogleAuthResponse),

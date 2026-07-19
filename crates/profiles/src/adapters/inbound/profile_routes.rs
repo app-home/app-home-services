@@ -116,6 +116,7 @@ fn base64_val(b: u8) -> Result<u8, ()> {
 #[utoipa::path(
     get,
     path = "/api/profile",
+    tag = "Profiles",
     security(("bearer_jwt" = [])),
     responses(
         (status = 200, description = "User profile", body = ProfileResponse),
@@ -161,6 +162,7 @@ pub async fn get_profile_handler(
 #[utoipa::path(
     put,
     path = "/api/profile",
+    tag = "Profiles",
     security(("bearer_jwt" = [])),
     request_body = UpdateProfileRequest,
     responses(

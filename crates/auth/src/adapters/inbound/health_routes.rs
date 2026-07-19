@@ -5,6 +5,7 @@ use crate::adapters::inbound::responses::HealthResponse;
 #[utoipa::path(
     get,
     path = "/api/health",
+    tag = "Authentication",
     responses(
         (status = 200, description = "Service healthy", body = HealthResponse),
     ),

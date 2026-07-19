@@ -30,6 +30,7 @@ pub struct RefreshTokenRequest {
 #[utoipa::path(
     post,
     path = "/api/auth/refresh",
+    tag = "Authentication",
     request_body = RefreshTokenRequest,
     responses(
         (status = 200, description = "Token refreshed", body = RefreshResponse),
