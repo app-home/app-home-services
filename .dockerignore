@@ -1,6 +1,7 @@
 .git/
 .gitignore
 target/
+crates/*/target/
 debug/
 release/
 *.rs.bk
