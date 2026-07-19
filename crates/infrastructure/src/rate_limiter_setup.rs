@@ -1,9 +1,10 @@
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use auth::adapters::memory_rate_limiter::MemoryRateLimiter;
-use auth::adapters::redis_rate_limiter::RedisRateLimiter;
-use auth::application::ports::rate_limiter::RateLimiter;
+use shared::ports::RateLimiter;
+
+use crate::rate_limiter::memory::MemoryRateLimiter;
+use crate::rate_limiter::redis::RedisRateLimiter;
 
 use crate::config::Settings;
 

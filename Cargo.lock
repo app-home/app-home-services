@@ -1228,7 +1228,7 @@ dependencies = [
 name = "infrastructure"
 version = "0.1.0"
 dependencies = [
- "auth",
+ "async-trait",
  "chrono",
  "metrics-exporter-prometheus",
  "redis",
@@ -2327,10 +2327,14 @@ dependencies = [
 name = "shared"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "axum",
  "chrono",
+ "jsonwebtoken",
  "serde",
  "thiserror",
  "tokio",
+ "utoipa",
  "uuid",
 ]
 

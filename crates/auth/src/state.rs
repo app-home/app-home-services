@@ -7,7 +7,7 @@ use crate::adapters::google_auth_provider::GoogleAuthProvider;
 use crate::adapters::jwt_service::JwtServiceImpl;
 use crate::adapters::postgres_session_repo::PostgresSessionRepo;
 use crate::adapters::postgres_user_repo::PostgresUserRepo;
-use crate::application::ports::rate_limiter::RateLimiter;
+use shared::ports::RateLimiter;
 use crate::config::auth_settings::AuthSettings;
 
 #[derive(Clone)]

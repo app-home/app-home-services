@@ -5,7 +5,7 @@ use std::time::{Duration, Instant};
 use async_trait::async_trait;
 use tokio::sync::Mutex;
 
-use crate::application::ports::rate_limiter::RateLimiter;
+use shared::ports::RateLimiter;
 
 #[derive(Debug, Clone)]
 struct RateLimitEntry {

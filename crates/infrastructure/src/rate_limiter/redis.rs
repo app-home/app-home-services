@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use redis::AsyncCommands;
 use redis::aio::ConnectionManager;
 
-use crate::application::ports::rate_limiter::RateLimiter;
+use shared::ports::RateLimiter;
 
 /// Atomically increments the per-IP attempt counter and sets its expiry on the first
 /// increment within a window (fixed-window counter). Doing this in a single Lua
@@ -58,27 +58,10 @@ pub struct RedisRateLimiter {
     max_attempts: u32,
     window_seconds: u64,
     key_prefix: String,
-    /// Running count of Redis errors encountered by this limiter instance (across
-    /// `check`, `record_attempt`, `remaining_attempts`, and `reset`), i.e. every time
-    /// this limiter has failed open. `Arc`-shared with every clone of this limiter
-    /// (the service clones it per-request), so the count reflects all fail-open
-    /// occurrences for this endpoint's rate limiting, not just one clone's.
-    ///
-    /// This is intentionally a plain counter rather than a dependency on a specific
-    /// metrics backend (e.g. `prometheus` or `metrics`), so it can be wired into
-    /// whatever telemetry stack the deployment uses. See `error_counter_handle` for
-    /// getting a shareable handle to this same counter (used by
-    /// `rate_limiter_setup::build_rate_limiters` to wire it into a `metrics::counter!`
-    /// exported over `/metrics` -- see #36), and #37/#38 for related follow-ups.
     redis_error_count: Arc<AtomicU64>,
 }
 
 impl RedisRateLimiter {
-    /// Connects to Redis and returns a limiter with the given attempt budget and
-    /// window, scoped under `key_prefix` (e.g. `"login"`, `"refresh"`). Fails fast
-    /// (returning an error) if the initial connection cannot be established, so a
-    /// misconfigured `REDIS_URL` is caught at startup rather than silently degrading
-    /// rate limiting later.
     pub async fn connect(
         redis_url: &str,
         max_attempts: u32,
@@ -103,19 +86,10 @@ impl RedisRateLimiter {
         format!("ratelimit:{}:{ip}", self.key_prefix)
     }
 
-    /// Total number of Redis errors (fail-open occurrences) observed by this limiter
-    /// since it was created. See the field doc on `redis_error_count` for how this is
-    /// meant to be consumed.
     pub fn redis_error_count(&self) -> u64 {
         self.redis_error_count.load(Ordering::Relaxed)
     }
 
-    /// Returns a cloned, shareable handle to this limiter's error counter, so a
-    /// caller can keep polling it (e.g. into a metrics exporter) after this
-    /// `RedisRateLimiter` has been type-erased into an `Arc<dyn RateLimiter>` and its
-    /// concrete methods are no longer reachable. See
-    /// `rate_limiter_setup::build_rate_limiters`, which grabs this handle before
-    /// erasing the type.
     pub fn error_counter_handle(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.redis_error_count)
     }

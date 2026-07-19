@@ -1,10 +1,11 @@
 # Contract: OpenAPI Documentation Endpoints
 
-**Feature**: `specs/003-openapi-docs` | **Date**: 2026-07-15
+**Feature**: `specs/003-openapi-docs` | **Date**: 2026-07-19
 
-This contract defines the two new documentation surfaces and the guarantees the
-generated specification must satisfy. It is complementary to the auth-endpoint
-contracts under `specs/002-audit-security-hardening/contracts/`.
+This contract defines the two documentation surfaces and the guarantees the
+generated specification must satisfy. It is complementary to the endpoint
+contracts under `specs/002-audit-security-hardening/contracts/`,
+`specs/005-user-profiles/contracts/`, and `specs/006-admin/contracts/`.
 
 ---
 
@@ -19,19 +20,29 @@ Serves the machine-readable OpenAPI document.
 - **Content guarantees**:
   - `openapi` version field present (3.x).
   - `info.title`, `info.version` populated.
-  - `paths` contains exactly the documented public endpoints:
-    - `POST /api/auth/login/password`
-    - `POST /api/auth/login/google`
-    - `POST /api/auth/logout`
-    - `POST /api/auth/refresh`
-    - `GET /api/health`
+  - `info.description` = `"App Home Services API"`.
+  - `tags` includes `Authentication`, `Profiles`, and `Admin` with descriptions.
+  - `paths` contains all documented public endpoints (grouped by tag):
+    - `POST /api/auth/login/password` (Authentication)
+    - `POST /api/auth/login/google` (Authentication)
+    - `POST /api/auth/logout` (Authentication)
+    - `POST /api/auth/refresh` (Authentication)
+    - `GET /api/health` (Authentication)
+    - `GET /api/profile` (Profiles)
+    - `PUT /api/profile` (Profiles)
+    - `GET /api/admin/users` (Admin)
+    - `GET /api/admin/users/{id}` (Admin)
+    - `PUT /api/admin/users/{id}/role` (Admin)
   - `paths` does **not** contain `/metrics` (excluded by policy).
   - `components.schemas` includes: `PasswordLoginRequest`, `GoogleLoginRequest`,
     `LogoutRequest`, `RefreshTokenRequest`, `AuthTokensResponse`, `GoogleAuthResponse`,
-    `RefreshResponse`, `StatusResponse`, `HealthResponse`, `ErrorResponse`.
+    `RefreshResponse`, `StatusResponse`, `HealthResponse`, `ErrorResponse`,
+    `ProfileResponse`, `UpdateProfileRequest`, `UserResponse`, `UpdateRoleRequest`.
   - `components.securitySchemes` includes `bearer_jwt` (HTTP bearer, format JWT).
-  - The `logout` operation declares `security: [{ bearer_jwt: [] }]`; no other operation does.
-  - Each operation lists all documented status codes for that endpoint (see `data-model.md` matrix).
+  - Operations that require auth declare `security: [{ bearer_jwt: [] }]`:
+    `POST /api/auth/logout`, all profile and admin endpoints.
+  - Each operation lists all documented status codes for that endpoint (see individual
+    contracts and `data-model.md` matrix).
   - No example/default value contains a real secret, credential, or valid token.
 
 **Validation**: The returned document MUST pass a standard OpenAPI 3.x validator with zero
@@ -48,9 +59,9 @@ Serves the interactive Swagger UI that renders `/api-docs/openapi.json`.
 - **Auth**: none
 - **Response 200**: `text/html` (UI shell) plus static assets served by `utoipa-swagger-ui`.
 - **Behavior guarantees**:
-  - Lists every documented endpoint with method, path, summary, request schema (where applicable),
-    and response schemas.
-  - Provides an "Authorize" affordance for the Bearer JWT scheme; the logout endpoint shows a
+  - Lists every documented endpoint grouped by tag (Authentication, Profiles, Admin)
+    with method, path, summary, request schema (where applicable), and response schemas.
+  - Provides an "Authorize" affordance for the Bearer JWT scheme; protected endpoints show a
     padlock / required-auth indicator.
   - "Try it out" issues live requests to the running service and displays the actual status code
     and response body.
@@ -59,7 +70,7 @@ Serves the interactive Swagger UI that renders `/api-docs/openapi.json`.
 
 ## Coverage Guarantee (FR-012 / SC-008)
 
-An automated `cargo test` (`tests/openapi_coverage_test.rs`) MUST fail if:
+An automated `cargo test` (`tests/openapi_coverage.rs`) MUST fail if:
 - any endpoint in the documented set is missing from `ApiDoc::openapi()`, OR
 - `ApiDoc` documents an endpoint not intended by policy (e.g. `/metrics` appears).
 
@@ -69,7 +80,7 @@ This prevents a new public endpoint from shipping undocumented.
 
 ## Consistency Guarantee (FR-011 / SC-007)
 
-An automated `cargo test` (`tests/docs_contract_consistency_test.rs`) MUST compare the
+An automated `cargo test` (`tests/markdown_contract_consistency.rs`) MUST compare the
 generated spec against the Markdown contracts under `specs/*/contracts/` and report divergence in:
 - the set of endpoints,
 - HTTP methods per endpoint,

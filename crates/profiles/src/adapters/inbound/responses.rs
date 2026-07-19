@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+pub use shared::api::ErrorResponse;
+
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct ProfileResponse {
     pub user_id: String,
@@ -19,7 +21,4 @@ pub struct UpdateProfileRequest {
     pub bio: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, ToSchema)]
-pub struct ErrorResponse {
-    pub error: String,
-}
+

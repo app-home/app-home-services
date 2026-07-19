@@ -3,15 +3,15 @@ use utoipa::{
     openapi::security::{HttpBuilder, SecurityScheme},
 };
 
-use auth::adapters::inbound::health_routes::__path_health_check;
+use crate::health::__path_health_check;
 use auth::adapters::inbound::login_routes::{__path_login_password_handler, PasswordLoginRequest};
 use auth::adapters::inbound::logout_routes::{__path_logout_handler, LogoutRequest};
 use auth::adapters::inbound::oauth_callback::{__path_login_google_handler, GoogleLoginRequest};
 use auth::adapters::inbound::refresh_routes::{__path_refresh_token_handler, RefreshTokenRequest};
 use auth::adapters::inbound::responses::{
-    AuthTokensResponse, ErrorResponse, GoogleAuthResponse, HealthResponse, RefreshResponse,
-    StatusResponse,
+    AuthTokensResponse, ErrorResponse, GoogleAuthResponse, RefreshResponse, StatusResponse,
 };
+use shared::api::HealthResponse;
 
 use admin::adapters::inbound::admin_routes::{
     __path_get_user_handler, __path_list_users_handler, __path_update_user_role_handler,
@@ -29,6 +29,7 @@ use profiles::adapters::inbound::responses::{ProfileResponse, UpdateProfileReque
         (name = "Authentication", description = "Authentication & session management"),
         (name = "Profiles", description = "User profile management"),
         (name = "Admin", description = "Admin user management"),
+        (name = "Health", description = "Service health monitoring"),
     ),
     servers(
         (url = "http://localhost:3000", description = "Local development"),

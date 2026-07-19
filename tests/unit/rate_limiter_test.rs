@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-use app_home_services::application::ports::rate_limiter::RateLimiter;
-use auth::adapters::memory_rate_limiter::MemoryRateLimiter;
+use app_home_services::shared::ports::RateLimiter;
+use app_home_services::infrastructure::rate_limiter::memory::MemoryRateLimiter;
 
 #[tokio::test]
 async fn test_rate_limiter_allows_first_attempt() {
