@@ -13,8 +13,8 @@ RUN cargo build --release
 
 FROM docker.io/debian:bookworm-slim
 
-RUN apt-get update && apt-get upgrade -y && apt-get install -y --no-install-recommends \
-    ca-certificates libssl3 \
+RUN apt-get update && apt-get install -y --only-upgrade --no-install-recommends \
+    libssl3 ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/target/release/app-home-services /usr/local/bin/app-home-services
