@@ -9,7 +9,7 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::AppState;
-use crate::adapters::inbound::auth_middleware::AuthenticatedUser;
+use shared::auth::AuthenticatedUser;
 use crate::adapters::inbound::responses::{ErrorResponse, StatusResponse};
 use crate::application::use_cases::logout;
 use crate::domain::errors::AuthError;

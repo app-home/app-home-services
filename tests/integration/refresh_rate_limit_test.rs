@@ -5,8 +5,8 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use app_home_services::application::ports::rate_limiter::RateLimiter;
-use auth::adapters::redis_rate_limiter::RedisRateLimiter;
+use app_home_services::shared::ports::RateLimiter;
+use app_home_services::infrastructure::rate_limiter::redis::RedisRateLimiter;
 
 /// Deletes the rate-limit counters for 127.0.0.1 in both the login and refresh
 /// Redis namespaces so tests are not blocked by state from a previous test.

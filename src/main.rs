@@ -8,6 +8,7 @@ use axum::{
     Extension,
     routing::{get, post, put},
 };
+use jsonwebtoken::DecodingKey;
 use utoipa::OpenApi;
 
 use admin::adapters::inbound::admin_routes::{
@@ -114,6 +115,8 @@ async fn main() {
 
     spawn_rate_limiter_metrics_poller(rate_limiter_error_counters);
 
+    let decoding_key = Arc::new(DecodingKey::from_secret(auth_settings.jwt_secret.as_bytes()));
+
     if settings.server_host == "0.0.0.0" {
         tracing::warn!(
             "Binding to 0.0.0.0 exposes the /metrics endpoint (no auth) and all API routes on every network interface; set SERVER_HOST=127.0.0.1 if this is unintended"
@@ -172,6 +175,7 @@ async fn main() {
         .route("/api/admin/users/{id}/role", put(update_user_role_handler))
         .layer(Extension(profile_repo))
         .layer(Extension(admin_repo))
+        .layer(Extension(decoding_key))
         // Not gated behind auth: Prometheus scrape endpoints are conventionally
         // reached only from inside a private network / the cluster's monitoring
         // namespace, never exposed publicly. If this service is ever reachable from
