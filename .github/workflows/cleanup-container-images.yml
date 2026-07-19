@@ -1,0 +1,38 @@
+name: Cleanup old container images
+
+on:
+  schedule:
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+
+env:
+  ORG: app-home
+  PACKAGE: app-home-services
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Delete images older than 30 days (preserve release tags)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          CUTOFF=$(date -d "30 days ago" --iso-8601=seconds)
+          echo "Deleting versions created before $CUTOFF"
+
+          gh api "/orgs/${ORG}/packages/container/${PACKAGE}/versions" \
+            --paginate \
+            --jq '.[] | select(
+              (.metadata.container.tags | contains(["latest"]) | not) and
+              (.metadata.container.tags | any(startswith("v")) | not) and
+              (.created_at < "'"$CUTOFF"'")
+            ) | "\(.id) \(.created_at) \(.metadata.container.tags)"' \
+            | while read -r id created tags; do
+                echo "Deleting version $id (created: $created, tags: $tags)"
+                gh api -X DELETE \
+                  "/orgs/${ORG}/packages/container/${PACKAGE}/versions/${id}"
+              done
