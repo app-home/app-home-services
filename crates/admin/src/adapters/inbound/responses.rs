@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+pub use shared::api::ErrorResponse;
+
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct UserResponse {
     pub id: String,
@@ -14,10 +16,7 @@ pub struct UserResponse {
     pub updated_at: String,
 }
 
-#[derive(Serialize, Deserialize, ToSchema)]
-pub struct ErrorResponse {
-    pub error: String,
-}
+
 
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct UpdateRoleRequest {

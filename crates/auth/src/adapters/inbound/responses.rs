@@ -34,7 +34,4 @@ pub struct HealthResponse {
     pub status: String,
 }
 
-#[derive(Serialize, Deserialize, ToSchema)]
-pub struct ErrorResponse {
-    pub error: String,
-}
+pub use shared::api::ErrorResponse;

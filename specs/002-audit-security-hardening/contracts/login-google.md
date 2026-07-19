@@ -37,3 +37,19 @@
     "error": "ID token is required"
 }
 ```
+
+## Response 429 (Rate limit exceeded)
+
+```json
+{
+    "error": "Rate limit exceeded"
+}
+```
+
+## Response 500 (Internal server error)
+
+```json
+{
+    "error": "Internal server error"
+}
+```

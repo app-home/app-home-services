@@ -28,11 +28,27 @@
 }
 ```
 
-## Response 401 (Session inactive)
+## Response 422 (Validation error)
 
 ```json
 {
-    "error": "Session has been invalidated"
+    "error": "Refresh token is required"
+}
+```
+
+## Response 429 (Rate limit exceeded)
+
+```json
+{
+    "error": "Rate limit exceeded"
+}
+```
+
+## Response 500 (Internal server error)
+
+```json
+{
+    "error": "Internal server error"
 }
 ```
 

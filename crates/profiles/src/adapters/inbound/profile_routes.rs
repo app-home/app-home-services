@@ -122,6 +122,7 @@ fn base64_val(b: u8) -> Result<u8, ()> {
         (status = 200, description = "User profile", body = ProfileResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 404, description = "Profile not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     ),
 )]
 pub async fn get_profile_handler(
@@ -169,6 +170,7 @@ pub async fn get_profile_handler(
         (status = 200, description = "Profile updated", body = ProfileResponse),
         (status = 400, description = "Validation error", body = ErrorResponse),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     ),
 )]
 pub async fn update_profile_handler(

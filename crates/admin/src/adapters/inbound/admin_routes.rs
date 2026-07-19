@@ -147,6 +147,7 @@ fn user_to_response(user: crate::domain::entities::admin_user::AdminUser) -> Use
         (status = 200, description = "List of users", body = Vec<UserResponse>),
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 403, description = "Forbidden", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     ),
 )]
 pub async fn list_users_handler(
@@ -198,6 +199,7 @@ pub async fn list_users_handler(
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     ),
 )]
 pub async fn get_user_handler(
@@ -256,6 +258,7 @@ pub async fn get_user_handler(
         (status = 401, description = "Unauthorized", body = ErrorResponse),
         (status = 403, description = "Forbidden", body = ErrorResponse),
         (status = 404, description = "Not found", body = ErrorResponse),
+        (status = 500, description = "Internal server error", body = ErrorResponse),
     ),
 )]
 pub async fn update_user_role_handler(
