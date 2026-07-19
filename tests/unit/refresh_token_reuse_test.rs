@@ -1,18 +1,10 @@
-// Unit tests for issue #12: reusing an already-invalidated refresh token must
-// revoke every active session for that user (theft response), not just reject the
-// one request.
-//
-// These exercise `refresh_token()` directly against in-memory mock implementations
-// of SessionRepository / UserRepository / JwtService, rather than going through the
-// full HTTP + Postgres integration path -- the property under test (session-state
-// bookkeeping) doesn't depend on real JWT signing or a real database, and mocking it
-// here means this test needs no running Postgres to catch a regression.
-
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use shared::domain::value_objects::auth_method::AuthMethod;
+use shared::domain::value_objects::hashed_password::HashedPassword;
 use uuid::Uuid;
 
 use app_home_services::application::ports::jwt_service::{
@@ -39,26 +31,26 @@ impl MockSessionRepository {
     }
 
     fn insert(&self, session: Session) {
-        self.sessions.lock().unwrap().insert(session.id, session);
+        self.sessions.lock().unwrap().insert(session.id(), session);
     }
 }
 
 #[async_trait]
 impl SessionRepository for MockSessionRepository {
     async fn create(&self, session: NewSession) -> Result<Session, AuthError> {
-        let session = Session {
-            id: session.id,
-            user_id: session.user_id,
-            refresh_token_hash: session.refresh_token_hash,
-            expires_at: session.expires_at,
-            is_active: true,
-            created_at: Utc::now(),
-            auth_method: session.auth_method,
-        };
+        let session = Session::new(
+            session.id,
+            session.user_id,
+            session.refresh_token_hash,
+            session.expires_at,
+            true,
+            Utc::now(),
+            session.auth_method,
+        );
         self.sessions
             .lock()
             .unwrap()
-            .insert(session.id, session.clone());
+            .insert(session.id(), session.clone());
         Ok(session)
     }
 
@@ -72,30 +64,28 @@ impl SessionRepository for MockSessionRepository {
             .lock()
             .unwrap()
             .values()
-            .filter(|s| s.user_id == user_id && s.is_active)
+            .filter(|s| s.user_id() == user_id && s.is_active())
             .cloned()
             .collect())
     }
 
     async fn invalidate(&self, id: Uuid) -> Result<(), AuthError> {
         if let Some(session) = self.sessions.lock().unwrap().get_mut(&id) {
-            session.is_active = false;
+            session.invalidate();
         }
         Ok(())
     }
 
     async fn invalidate_all_for_user(&self, user_id: Uuid) -> Result<(), AuthError> {
         for session in self.sessions.lock().unwrap().values_mut() {
-            if session.user_id == user_id {
-                session.is_active = false;
+            if session.user_id() == user_id {
+                session.invalidate();
             }
         }
         Ok(())
     }
 }
 
-/// `refresh_token` takes a `_user_repo` parameter it never uses, so this mock only
-/// needs to satisfy the trait bound -- it's never actually called.
 struct MockUserRepository;
 
 #[async_trait]
@@ -117,10 +107,6 @@ impl UserRepository for MockUserRepository {
     }
 }
 
-/// Always decodes to the same fixed claims, regardless of the token string. This
-/// test is about `refresh_token`'s session-state handling, not JWT parsing (which is
-/// covered elsewhere), so the mock just needs to produce a known (user_id,
-/// session_id) pair.
 struct MockJwtService {
     claims: RefreshTokenClaims,
 }
@@ -166,8 +152,6 @@ fn test_settings() -> Settings {
     }
 }
 
-// Cheap bcrypt cost for test speed -- the actual cost value doesn't matter for what
-// these tests verify (session-state transitions), only that verify() matches hash().
 const TEST_BCRYPT_COST: u32 = 4;
 
 #[tokio::test]
@@ -178,30 +162,29 @@ async fn reusing_invalidated_refresh_token_revokes_all_sessions_for_user() {
 
     let session_repo = MockSessionRepository::new();
 
-    // The "old" session: already invalidated, as if it had already been rotated away
-    // by a previous, legitimate refresh. Replaying its refresh token now is exactly
-    // the reuse scenario this fix targets.
-    session_repo.insert(Session {
-        id: old_session_id,
+    let old_hash =
+        HashedPassword::new(bcrypt::hash("old-refresh-token", TEST_BCRYPT_COST).unwrap()).unwrap();
+    session_repo.insert(Session::new(
+        old_session_id,
         user_id,
-        refresh_token_hash: bcrypt::hash("old-refresh-token", TEST_BCRYPT_COST).unwrap(),
-        expires_at: Utc::now() + Duration::days(7),
-        is_active: false,
-        created_at: Utc::now(),
-        auth_method: "password".to_string(),
-    });
+        old_hash,
+        Utc::now() + Duration::days(7),
+        false,
+        Utc::now(),
+        AuthMethod::Password,
+    ));
 
-    // A second, still-active session for the same user (e.g. a different device),
-    // which must also get revoked once reuse is detected.
-    session_repo.insert(Session {
-        id: other_session_id,
+    let other_hash =
+        HashedPassword::new(bcrypt::hash("other-refresh-token", TEST_BCRYPT_COST).unwrap()).unwrap();
+    session_repo.insert(Session::new(
+        other_session_id,
         user_id,
-        refresh_token_hash: bcrypt::hash("other-refresh-token", TEST_BCRYPT_COST).unwrap(),
-        expires_at: Utc::now() + Duration::days(7),
-        is_active: true,
-        created_at: Utc::now(),
-        auth_method: "password".to_string(),
-    });
+        other_hash,
+        Utc::now() + Duration::days(7),
+        true,
+        Utc::now(),
+        AuthMethod::Password,
+    ));
 
     let jwt_service = MockJwtService {
         claims: RefreshTokenClaims {
@@ -238,8 +221,6 @@ async fn reusing_invalidated_refresh_token_revokes_all_sessions_for_user() {
 
 #[tokio::test]
 async fn legitimate_refresh_of_an_active_session_does_not_touch_other_sessions() {
-    // Sanity check: a normal (non-reuse) refresh must only rotate its own session,
-    // leaving other active sessions for the same user untouched.
     let user_id = Uuid::now_v7();
     let active_session_id = Uuid::now_v7();
     let other_session_id = Uuid::now_v7();
@@ -247,24 +228,29 @@ async fn legitimate_refresh_of_an_active_session_does_not_touch_other_sessions()
     let session_repo = MockSessionRepository::new();
     let real_refresh_token = "real-refresh-token";
 
-    session_repo.insert(Session {
-        id: active_session_id,
+    let active_hash =
+        HashedPassword::new(bcrypt::hash(real_refresh_token, TEST_BCRYPT_COST).unwrap()).unwrap();
+    session_repo.insert(Session::new(
+        active_session_id,
         user_id,
-        refresh_token_hash: bcrypt::hash(real_refresh_token, TEST_BCRYPT_COST).unwrap(),
-        expires_at: Utc::now() + Duration::days(7),
-        is_active: true,
-        created_at: Utc::now(),
-        auth_method: "password".to_string(),
-    });
-    session_repo.insert(Session {
-        id: other_session_id,
+        active_hash,
+        Utc::now() + Duration::days(7),
+        true,
+        Utc::now(),
+        AuthMethod::Password,
+    ));
+
+    let other_hash =
+        HashedPassword::new(bcrypt::hash("unrelated-token", TEST_BCRYPT_COST).unwrap()).unwrap();
+    session_repo.insert(Session::new(
+        other_session_id,
         user_id,
-        refresh_token_hash: bcrypt::hash("unrelated-token", TEST_BCRYPT_COST).unwrap(),
-        expires_at: Utc::now() + Duration::days(7),
-        is_active: true,
-        created_at: Utc::now(),
-        auth_method: "password".to_string(),
-    });
+        other_hash,
+        Utc::now() + Duration::days(7),
+        true,
+        Utc::now(),
+        AuthMethod::Password,
+    ));
 
     let jwt_service = MockJwtService {
         claims: RefreshTokenClaims {
@@ -293,9 +279,7 @@ async fn legitimate_refresh_of_an_active_session_does_not_touch_other_sessions()
 
     let remaining_active = session_repo.find_active_by_user_id(user_id).await.unwrap();
 
-    // The rotated session gets replaced by a brand new one (new id); the untouched
-    // "other" session should still be active and untouched.
     assert_eq!(remaining_active.len(), 2);
-    assert!(remaining_active.iter().any(|s| s.id == other_session_id));
-    assert!(!remaining_active.iter().any(|s| s.id == active_session_id));
+    assert!(remaining_active.iter().any(|s| s.id() == other_session_id));
+    assert!(!remaining_active.iter().any(|s| s.id() == active_session_id));
 }

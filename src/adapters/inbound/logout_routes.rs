@@ -5,6 +5,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use shared::domain::events::Event;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
@@ -12,7 +13,6 @@ use crate::AppState;
 use crate::adapters::inbound::auth_middleware::AuthenticatedUser;
 use crate::adapters::inbound::responses::{ErrorResponse, StatusResponse};
 use crate::application::use_cases::logout;
-use crate::application::use_cases::record_audit_entry;
 use crate::domain::errors::AuthError;
 
 #[derive(Deserialize, ToSchema)]
@@ -46,18 +46,8 @@ pub async fn logout_handler(
     )
     .await
     {
-        Ok(auth_method) => {
-            if let Err(e) = record_audit_entry::record_audit_entry(
-                &state.user_repo,
-                auth_user.user_id,
-                Some(req.session_id),
-                "logout",
-                auth_method,
-            )
-            .await
-            {
-                tracing::error!(error = %e, "Failed to record logout audit entry");
-            }
+        Ok((_auth_method, event)) => {
+            state.event_bus.publish(Event::UserLoggedOut(event));
 
             tracing::info!(user_id = %auth_user.user_id, session_id = %req.session_id, "Logout successful");
 

@@ -1,3 +1,6 @@
+use shared::domain::events::session_refreshed::SessionRefreshed;
+use shared::domain::value_objects::auth_method::AuthMethod;
+use shared::domain::value_objects::hashed_password::HashedPassword;
 use tracing::error;
 use uuid::Uuid;
 
@@ -13,10 +16,8 @@ pub struct RefreshResult {
     pub session_id: Uuid,
     pub access_token: String,
     pub refresh_token: String,
-    /// The auth method the *original* session was created with ("password" or
-    /// "google_oauth"), carried forward from the session being rotated so callers
-    /// (e.g. the audit log) can record the real method instead of assuming one.
-    pub auth_method: String,
+    pub auth_method: AuthMethod,
+    pub event: SessionRefreshed,
 }
 
 pub async fn refresh_token(
@@ -33,13 +34,7 @@ pub async fn refresh_token(
         .await?
         .ok_or(AuthError::SessionNotFound)?;
 
-    if !session.is_active {
-        // Reusing an already-invalidated refresh token is a strong signal of theft:
-        // the legitimate client always holds the *current* token after rotation, so
-        // a request bearing the old one most likely means it was copied by someone
-        // else. Revoke every active session for this user rather than only rejecting
-        // this one request, and log it distinctly from a routine "session expired"
-        // rejection so it's visible to whoever is watching security events.
+    if !session.is_active() {
         tracing::warn!(
             user_id = %claims.sub,
             session_id = %claims.session_id,
@@ -53,13 +48,14 @@ pub async fn refresh_token(
         return Err(AuthError::SessionExpired);
     }
 
-    let is_valid_refresh = match bcrypt::verify(refresh_token, &session.refresh_token_hash) {
-        Ok(valid) => valid,
-        Err(e) => {
-            error!(error = %e, "bcrypt::verify failed for refresh token hash");
-            false
-        }
-    };
+    let is_valid_refresh =
+        match bcrypt::verify(refresh_token, session.refresh_token_hash().as_ref()) {
+            Ok(valid) => valid,
+            Err(e) => {
+                error!(error = %e, "bcrypt::verify failed for refresh token hash");
+                false
+            }
+        };
     if !is_valid_refresh {
         return Err(AuthError::InvalidRefreshToken);
     }
@@ -72,22 +68,24 @@ pub async fn refresh_token(
     let expires_at =
         chrono::Utc::now() + chrono::Duration::days(settings.refresh_token_expiry_days);
 
-    let refresh_hash = bcrypt::hash(&token_pair.refresh_token, bcrypt::DEFAULT_COST)
-        .map_err(|_| AuthError::TokenGenerationFailed)?;
+    let refresh_hash = HashedPassword::new(
+        bcrypt::hash(&token_pair.refresh_token, bcrypt::DEFAULT_COST)
+            .map_err(|_| AuthError::TokenGenerationFailed)?,
+    )
+    .map_err(|_| AuthError::TokenGenerationFailed)?;
 
-    // Carry the auth_method forward from the session being rotated, rather than
-    // assuming/hardcoding one -- a rotated Google-originated session must stay
-    // attributed to "google_oauth", not silently become "password".
-    let auth_method = session.auth_method.clone();
+    let auth_method = *session.auth_method();
 
     let new_session = NewSession::new(
         new_session_id,
         claims.sub,
         refresh_hash,
         expires_at,
-        auth_method.clone(),
+        auth_method,
     );
     session_repo.create(new_session).await?;
+
+    let event = SessionRefreshed::new(claims.sub, new_session_id, auth_method);
 
     Ok(RefreshResult {
         user_id: claims.sub,
@@ -95,5 +93,6 @@ pub async fn refresh_token(
         access_token: token_pair.access_token,
         refresh_token: token_pair.refresh_token,
         auth_method,
+        event,
     })
 }

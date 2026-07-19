@@ -7,12 +7,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use shared::domain::events::Event;
 use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::adapters::inbound::responses::{AuthTokensResponse, ErrorResponse};
 use crate::application::use_cases::login_with_password;
-use crate::application::use_cases::record_audit_entry;
 use crate::domain::errors::AuthError;
 
 const MAX_USERNAME_LEN: usize = 256;
@@ -26,14 +26,6 @@ pub struct PasswordLoginRequest {
     password: String,
 }
 
-/// Resolves the client IP to use for rate limiting.
-///
-/// `X-Forwarded-For` / `X-Real-IP` are only trusted when the direct TCP peer
-/// (`peer_ip`) is itself a known, trusted reverse proxy. Any client can set these
-/// headers to an arbitrary value, so honoring them unconditionally would let an
-/// attacker bypass rate limiting entirely by sending a different fake IP on every
-/// request. When the peer is not in `trusted_proxies`, the headers are ignored and
-/// the real peer address is used instead.
 pub fn resolve_client_ip(
     peer_ip: IpAddr,
     headers: &axum::http::HeaderMap,
@@ -118,27 +110,16 @@ pub async fn login_password_handler(
     .await
     {
         Ok(result) => {
-            tracing::info!(user_id = %result.user.id, method = "password", "Login successful");
+            tracing::info!(user_id = %result.user.id(), method = "password", "Login successful");
 
             state.rate_limiter.reset(ip).await;
-
-            if let Err(e) = record_audit_entry::record_audit_entry(
-                &state.user_repo,
-                result.user.id,
-                Some(result.session_id),
-                "login",
-                "password".to_string(),
-            )
-            .await
-            {
-                tracing::error!(error = %e, "Failed to record audit entry");
-            }
+            state.event_bus.publish(Event::UserLoggedIn(result.event));
 
             (
                 StatusCode::OK,
                 Json(AuthTokensResponse {
                     status: "authenticated".into(),
-                    user_id: result.user.id.to_string(),
+                    user_id: result.user.id().to_string(),
                     access_token: result.access_token,
                     refresh_token: result.refresh_token,
                 }),

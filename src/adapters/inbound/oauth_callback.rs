@@ -7,13 +7,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use shared::domain::events::Event;
 use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::adapters::inbound::login_routes::resolve_client_ip;
 use crate::adapters::inbound::responses::{ErrorResponse, GoogleAuthResponse};
 use crate::application::use_cases::login_with_google;
-use crate::application::use_cases::record_audit_entry;
 use crate::domain::errors::AuthError;
 
 const MAX_ID_TOKEN_LEN: usize = 16384;
@@ -79,29 +79,22 @@ pub async fn login_google_handler(
             state.rate_limiter.reset(ip).await;
 
             tracing::info!(
-                user_id = %result.user.id,
+                user_id = %result.user.id(),
                 is_new_user = result.is_new_user,
                 method = "google_oauth",
                 "Login successful"
             );
 
-            if let Err(e) = record_audit_entry::record_audit_entry(
-                &state.user_repo,
-                result.user.id,
-                Some(result.session_id),
-                "login",
-                "google_oauth".to_string(),
-            )
-            .await
-            {
-                tracing::error!(error = %e, "Failed to record audit entry");
+            state.event_bus.publish(Event::UserLoggedIn(result.login_event));
+            if let Some(created) = result.created_event {
+                state.event_bus.publish(Event::UserCreated(created));
             }
 
             (
                 StatusCode::OK,
                 Json(GoogleAuthResponse {
                     status: "authenticated".into(),
-                    user_id: result.user.id.to_string(),
+                    user_id: result.user.id().to_string(),
                     access_token: result.access_token,
                     refresh_token: result.refresh_token,
                     is_new_user: result.is_new_user,

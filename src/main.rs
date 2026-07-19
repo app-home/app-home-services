@@ -12,11 +12,13 @@ use app_home_services::adapters::inbound::login_routes::login_password_handler;
 use app_home_services::adapters::inbound::logout_routes::logout_handler;
 use app_home_services::adapters::inbound::oauth_callback::login_google_handler;
 use app_home_services::adapters::inbound::refresh_routes::refresh_token_handler;
+use app_home_services::adapters::outbound::audit_event_handler::AuditEventHandler;
 use app_home_services::adapters::outbound::google_auth_provider::GoogleAuthProvider;
 use app_home_services::adapters::outbound::jwt_service::JwtServiceImpl;
 use app_home_services::adapters::outbound::postgres_session_repo::PostgresSessionRepo;
 use app_home_services::adapters::outbound::postgres_user_repo::PostgresUserRepo;
 use app_home_services::infrastructure::config::settings::Settings;
+use shared::event_bus::EventBus;
 use app_home_services::infrastructure::rate_limiter_setup::{
     RateLimiterErrorCounters, build_rate_limiters,
 };
@@ -61,7 +63,26 @@ async fn main() {
     }
 
     let user_repo = PostgresUserRepo::new(pool.clone());
-    let session_repo = PostgresSessionRepo::new(pool);
+    let session_repo = PostgresSessionRepo::new(pool.clone());
+
+    let (event_bus, mut event_rx) = EventBus::new(256);
+    let audit_handler = AuditEventHandler::new(pool.clone());
+
+    tokio::spawn(async move {
+        use tokio::sync::broadcast::error::RecvError;
+        loop {
+            match event_rx.recv().await {
+                Ok(event) => audit_handler.handle(event).await,
+                Err(RecvError::Closed) => {
+                    tracing::warn!("Event bus closed");
+                    break;
+                }
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!(skipped = %n, "Event bus receiver lagged");
+                }
+            }
+        }
+    });
     let auth_provider = GoogleAuthProvider::new(settings.google_client_id.clone());
     let jwt_service = JwtServiceImpl::new(
         &settings.jwt_secret,
@@ -94,6 +115,7 @@ async fn main() {
         jwt_service,
         rate_limiter,
         refresh_rate_limiter,
+        event_bus,
         settings,
     );
 

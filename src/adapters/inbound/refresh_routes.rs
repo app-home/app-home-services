@@ -7,12 +7,12 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use shared::domain::events::Event;
 use utoipa::ToSchema;
 
 use crate::AppState;
 use crate::adapters::inbound::login_routes::resolve_client_ip;
 use crate::adapters::inbound::responses::{ErrorResponse, RefreshResponse};
-use crate::application::use_cases::record_audit_entry;
 use crate::application::use_cases::refresh_token;
 use crate::domain::errors::AuthError;
 
@@ -77,17 +77,7 @@ pub async fn refresh_token_handler(
         Ok(result) => {
             state.refresh_rate_limiter.reset(ip).await;
 
-            if let Err(e) = record_audit_entry::record_audit_entry(
-                &state.user_repo,
-                result.user_id,
-                Some(result.session_id),
-                "refresh",
-                result.auth_method.clone(),
-            )
-            .await
-            {
-                tracing::error!(error = %e, "Failed to record refresh audit entry");
-            }
+            state.event_bus.publish(Event::SessionRefreshed(result.event));
 
             tracing::info!(user_id = %result.user_id, "Token refresh successful");
 
@@ -121,11 +111,6 @@ pub async fn refresh_token_handler(
             }),
         )
             .into_response(),
-        // A missing session is an expected client-side outcome (e.g. the session was
-        // deleted, or a token references a session id that no longer exists) -- not
-        // an internal failure. Treat it the same as an invalid refresh token rather
-        // than falling through to the 500 catch-all below, which both misreports it
-        // to clients and pollutes error-rate monitoring with tracing::error! noise.
         Err(AuthError::SessionNotFound) => (
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse {

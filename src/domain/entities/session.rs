@@ -1,33 +1,77 @@
 use chrono::{DateTime, Utc};
+use shared::domain::value_objects::auth_method::AuthMethod;
+use shared::domain::value_objects::hashed_password::HashedPassword;
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct Session {
-    pub id: Uuid,
-    pub user_id: Uuid,
-    pub refresh_token_hash: String,
-    pub expires_at: DateTime<Utc>,
-    pub is_active: bool,
-    pub created_at: DateTime<Utc>,
-    /// How the user authenticated when this session was created ("password" or
-    /// "google_oauth"). Stored per-session (rather than derived from the user's
-    /// account) so logout/refresh audit entries can report the method actually used
-    /// for *this* session, and so it survives token rotation -- see
-    /// `refresh_token.rs`, which carries this value forward from the old session to
-    /// the new one instead of losing it.
-    pub auth_method: String,
+    id: Uuid,
+    user_id: Uuid,
+    refresh_token_hash: HashedPassword,
+    expires_at: DateTime<Utc>,
+    is_active: bool,
+    created_at: DateTime<Utc>,
+    auth_method: AuthMethod,
 }
 
 #[derive(Debug, Clone)]
 pub struct NewSession {
     pub id: Uuid,
     pub user_id: Uuid,
-    pub refresh_token_hash: String,
+    pub refresh_token_hash: HashedPassword,
     pub expires_at: DateTime<Utc>,
-    pub auth_method: String,
+    pub auth_method: AuthMethod,
 }
 
 impl Session {
+    pub fn new(
+        id: Uuid,
+        user_id: Uuid,
+        refresh_token_hash: HashedPassword,
+        expires_at: DateTime<Utc>,
+        is_active: bool,
+        created_at: DateTime<Utc>,
+        auth_method: AuthMethod,
+    ) -> Self {
+        Self {
+            id,
+            user_id,
+            refresh_token_hash,
+            expires_at,
+            is_active,
+            created_at,
+            auth_method,
+        }
+    }
+
+    pub fn id(&self) -> Uuid {
+        self.id
+    }
+
+    pub fn user_id(&self) -> Uuid {
+        self.user_id
+    }
+
+    pub fn refresh_token_hash(&self) -> &HashedPassword {
+        &self.refresh_token_hash
+    }
+
+    pub fn expires_at(&self) -> &DateTime<Utc> {
+        &self.expires_at
+    }
+
+    pub fn is_active(&self) -> bool {
+        self.is_active
+    }
+
+    pub fn created_at(&self) -> &DateTime<Utc> {
+        &self.created_at
+    }
+
+    pub fn auth_method(&self) -> &AuthMethod {
+        &self.auth_method
+    }
+
     pub fn is_expired(&self) -> bool {
         Utc::now() >= self.expires_at
     }
@@ -41,28 +85,25 @@ impl NewSession {
     pub fn new(
         id: Uuid,
         user_id: Uuid,
-        refresh_token_hash: String,
+        refresh_token_hash: HashedPassword,
         expires_at: DateTime<Utc>,
-        auth_method: impl Into<String>,
+        auth_method: AuthMethod,
     ) -> Self {
         Self {
             id,
             user_id,
             refresh_token_hash,
             expires_at,
-            auth_method: auth_method.into(),
+            auth_method,
         }
     }
 
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.refresh_token_hash.is_empty() {
+        if self.refresh_token_hash.as_ref().is_empty() {
             return Err("refresh_token_hash must not be empty");
         }
         if self.expires_at <= Utc::now() {
             return Err("expires_at must be in the future");
-        }
-        if self.auth_method.is_empty() {
-            return Err("auth_method must not be empty");
         }
         Ok(())
     }

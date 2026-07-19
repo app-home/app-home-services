@@ -11,6 +11,7 @@ use adapters::outbound::postgres_session_repo::PostgresSessionRepo;
 use adapters::outbound::postgres_user_repo::PostgresUserRepo;
 use application::ports::rate_limiter::RateLimiter;
 use infrastructure::config::settings::Settings;
+use shared::event_bus::EventBus;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -18,16 +19,9 @@ pub struct AppState {
     pub session_repo: PostgresSessionRepo,
     pub auth_provider: GoogleAuthProvider,
     pub jwt_service: JwtServiceImpl,
-    /// Rate limiter for `/api/auth/login/password`. Backend chosen at startup based on
-    /// configuration: `RedisRateLimiter` when `REDIS_URL` is set (safe for
-    /// multi-instance deployments), otherwise `MemoryRateLimiter` (single-instance
-    /// only). See `main.rs`.
     pub rate_limiter: Arc<dyn RateLimiter>,
-    /// Rate limiter for `/api/auth/refresh`, kept as a separate instance (and, for the
-    /// Redis backend, a separate key namespace) from `rate_limiter` so refresh
-    /// attempts and login attempts from the same IP don't share -- and therefore
-    /// can't exhaust -- each other's attempt budget.
     pub refresh_rate_limiter: Arc<dyn RateLimiter>,
+    pub event_bus: EventBus,
     pub settings: Settings,
 }
 
@@ -39,6 +33,7 @@ impl AppState {
         jwt_service: JwtServiceImpl,
         rate_limiter: Arc<dyn RateLimiter>,
         refresh_rate_limiter: Arc<dyn RateLimiter>,
+        event_bus: EventBus,
         settings: Settings,
     ) -> Self {
         Self {
@@ -48,6 +43,7 @@ impl AppState {
             jwt_service,
             rate_limiter,
             refresh_rate_limiter,
+            event_bus,
             settings,
         }
     }

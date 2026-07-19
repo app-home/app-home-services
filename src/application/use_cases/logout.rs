@@ -1,28 +1,27 @@
+use shared::domain::events::user_logged_out::UserLoggedOut;
+use shared::domain::value_objects::auth_method::AuthMethod;
 use uuid::Uuid;
 
 use crate::application::ports::session_repository::SessionRepository;
 use crate::application::ports::user_repository::UserRepository;
 use crate::domain::errors::AuthError;
 
-/// Logs the session out and returns the `auth_method` it was created with
-/// ("password" or "google_oauth"), so callers can record an accurate audit entry
-/// instead of assuming one.
 pub async fn logout(
     session_repo: &impl SessionRepository,
     _user_repo: &impl UserRepository,
     user_id: Uuid,
     session_id: Uuid,
-) -> Result<String, AuthError> {
+) -> Result<(AuthMethod, UserLoggedOut), AuthError> {
     let session = session_repo
         .find_by_id(session_id)
         .await?
         .ok_or(AuthError::SessionNotFound)?;
 
-    if session.user_id != user_id {
+    if session.user_id() != user_id {
         return Err(AuthError::SessionNotFound);
     }
 
-    if !session.is_active {
+    if !session.is_active() {
         return Err(AuthError::SessionInvalidated);
     }
 
@@ -32,5 +31,8 @@ pub async fn logout(
 
     session_repo.invalidate(session_id).await?;
 
-    Ok(session.auth_method)
+    let auth_method = *session.auth_method();
+    let event = UserLoggedOut::new(user_id, session_id, auth_method);
+
+    Ok((auth_method, event))
 }

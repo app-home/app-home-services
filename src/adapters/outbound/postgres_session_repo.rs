@@ -1,5 +1,7 @@
 use async_trait::async_trait;
 use chrono::Utc;
+use shared::domain::value_objects::auth_method::AuthMethod;
+use shared::domain::value_objects::hashed_password::HashedPassword;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -30,16 +32,16 @@ impl SessionRepository for PostgresSessionRepo {
         )
         .bind(session.id)
         .bind(session.user_id)
-        .bind(&session.refresh_token_hash)
+        .bind(session.refresh_token_hash.as_ref())
         .bind(session.expires_at)
         .bind(true)
         .bind(now)
-        .bind(&session.auth_method)
+        .bind(session.auth_method.as_str())
         .fetch_one(&self.pool)
         .await
         .map_err(|e| AuthError::InternalError(e.to_string()))?;
 
-        Ok(row.into_session())
+        row.into_session()
     }
 
     async fn find_by_id(&self, id: Uuid) -> Result<Option<Session>, AuthError> {
@@ -52,7 +54,7 @@ impl SessionRepository for PostgresSessionRepo {
         .await
         .map_err(|e| AuthError::InternalError(e.to_string()))?;
 
-        Ok(row.map(|r| r.into_session()))
+        row.map(|r| r.into_session()).transpose()
     }
 
     async fn find_active_by_user_id(&self, user_id: Uuid) -> Result<Vec<Session>, AuthError> {
@@ -67,7 +69,9 @@ impl SessionRepository for PostgresSessionRepo {
         .await
         .map_err(|e| AuthError::InternalError(e.to_string()))?;
 
-        Ok(rows.into_iter().map(|r| r.into_session()).collect())
+        rows.into_iter()
+            .map(|r| r.into_session())
+            .collect::<Result<Vec<_>, _>>()
     }
 
     async fn invalidate(&self, id: Uuid) -> Result<(), AuthError> {
@@ -105,15 +109,21 @@ struct SessionRow {
 }
 
 impl SessionRow {
-    fn into_session(self) -> Session {
-        Session {
-            id: self.id,
-            user_id: self.user_id,
-            refresh_token_hash: self.refresh_token_hash,
-            expires_at: self.expires_at,
-            is_active: self.is_active,
-            created_at: self.created_at,
-            auth_method: self.auth_method,
-        }
+    fn into_session(self) -> Result<Session, AuthError> {
+        let refresh_token_hash =
+            HashedPassword::new(self.refresh_token_hash)
+                .map_err(|e| AuthError::InternalError(e))?;
+        let auth_method = AuthMethod::try_from(self.auth_method.as_str())
+            .map_err(|e| AuthError::InternalError(e))?;
+
+        Ok(Session::new(
+            self.id,
+            self.user_id,
+            refresh_token_hash,
+            self.expires_at,
+            self.is_active,
+            self.created_at,
+            auth_method,
+        ))
     }
 }

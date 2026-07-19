@@ -1,17 +1,10 @@
-// Unit tests for issue #13: logout and refresh must report the *actual* auth_method
-// a session was created with ("password" or "google_oauth"), instead of the previous
-// hardcoded "password" -- which made the audit trail wrong for every Google-originated
-// session's logout/refresh events.
-//
-// These use in-memory mocks (no Postgres needed) to exercise `logout()` and
-// `refresh_token()` directly against a session seeded with auth_method: "google_oauth",
-// and assert the value comes back out correctly rather than being reset to "password".
-
 use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
+use shared::domain::value_objects::auth_method::AuthMethod;
+use shared::domain::value_objects::hashed_password::HashedPassword;
 use uuid::Uuid;
 
 use app_home_services::application::ports::jwt_service::{
@@ -39,26 +32,26 @@ impl MockSessionRepository {
     }
 
     fn insert(&self, session: Session) {
-        self.sessions.lock().unwrap().insert(session.id, session);
+        self.sessions.lock().unwrap().insert(session.id(), session);
     }
 }
 
 #[async_trait]
 impl SessionRepository for MockSessionRepository {
     async fn create(&self, session: NewSession) -> Result<Session, AuthError> {
-        let session = Session {
-            id: session.id,
-            user_id: session.user_id,
-            refresh_token_hash: session.refresh_token_hash,
-            expires_at: session.expires_at,
-            is_active: true,
-            created_at: Utc::now(),
-            auth_method: session.auth_method,
-        };
+        let session = Session::new(
+            session.id,
+            session.user_id,
+            session.refresh_token_hash,
+            session.expires_at,
+            true,
+            Utc::now(),
+            session.auth_method,
+        );
         self.sessions
             .lock()
             .unwrap()
-            .insert(session.id, session.clone());
+            .insert(session.id(), session.clone());
         Ok(session)
     }
 
@@ -72,22 +65,22 @@ impl SessionRepository for MockSessionRepository {
             .lock()
             .unwrap()
             .values()
-            .filter(|s| s.user_id == user_id && s.is_active)
+            .filter(|s| s.user_id() == user_id && s.is_active())
             .cloned()
             .collect())
     }
 
     async fn invalidate(&self, id: Uuid) -> Result<(), AuthError> {
         if let Some(session) = self.sessions.lock().unwrap().get_mut(&id) {
-            session.is_active = false;
+            session.invalidate();
         }
         Ok(())
     }
 
     async fn invalidate_all_for_user(&self, user_id: Uuid) -> Result<(), AuthError> {
         for session in self.sessions.lock().unwrap().values_mut() {
-            if session.user_id == user_id {
-                session.is_active = false;
+            if session.user_id() == user_id {
+                session.invalidate();
             }
         }
         Ok(())
@@ -168,22 +161,27 @@ async fn logout_reports_google_oauth_auth_method_not_password() {
     let session_id = Uuid::now_v7();
 
     let session_repo = MockSessionRepository::new();
-    session_repo.insert(Session {
-        id: session_id,
+    let hash = HashedPassword::new(bcrypt::hash("some-refresh-token", TEST_BCRYPT_COST).unwrap())
+        .unwrap();
+    session_repo.insert(Session::new(
+        session_id,
         user_id,
-        refresh_token_hash: bcrypt::hash("some-refresh-token", TEST_BCRYPT_COST).unwrap(),
-        expires_at: Utc::now() + Duration::days(7),
-        is_active: true,
-        created_at: Utc::now(),
-        auth_method: "google_oauth".to_string(),
-    });
+        hash,
+        Utc::now() + Duration::days(7),
+        true,
+        Utc::now(),
+        AuthMethod::GoogleOAuth,
+    ));
     let user_repo = MockUserRepository;
 
-    let result = logout(&session_repo, &user_repo, user_id, session_id).await;
+    let (auth_method, _event) =
+        logout(&session_repo, &user_repo, user_id, session_id)
+            .await
+            .expect("logout should succeed");
 
     assert_eq!(
-        result.expect("logout should succeed"),
-        "google_oauth",
+        auth_method,
+        AuthMethod::GoogleOAuth,
         "the audit entry's auth_method must reflect how this session was actually \
          created, not be hardcoded to \"password\""
     );
@@ -191,26 +189,29 @@ async fn logout_reports_google_oauth_auth_method_not_password() {
 
 #[tokio::test]
 async fn logout_reports_password_auth_method_for_a_password_session() {
-    // Symmetry / regression check: password-originated sessions must still report
-    // "password" correctly.
     let user_id = Uuid::now_v7();
     let session_id = Uuid::now_v7();
 
     let session_repo = MockSessionRepository::new();
-    session_repo.insert(Session {
-        id: session_id,
+    let hash = HashedPassword::new(bcrypt::hash("some-refresh-token", TEST_BCRYPT_COST).unwrap())
+        .unwrap();
+    session_repo.insert(Session::new(
+        session_id,
         user_id,
-        refresh_token_hash: bcrypt::hash("some-refresh-token", TEST_BCRYPT_COST).unwrap(),
-        expires_at: Utc::now() + Duration::days(7),
-        is_active: true,
-        created_at: Utc::now(),
-        auth_method: "password".to_string(),
-    });
+        hash,
+        Utc::now() + Duration::days(7),
+        true,
+        Utc::now(),
+        AuthMethod::Password,
+    ));
     let user_repo = MockUserRepository;
 
-    let result = logout(&session_repo, &user_repo, user_id, session_id).await;
+    let (auth_method, _event) =
+        logout(&session_repo, &user_repo, user_id, session_id)
+            .await
+            .expect("logout should succeed");
 
-    assert_eq!(result.expect("logout should succeed"), "password");
+    assert_eq!(auth_method, AuthMethod::Password);
 }
 
 #[tokio::test]
@@ -220,15 +221,17 @@ async fn refresh_carries_google_oauth_auth_method_forward_after_rotation() {
     let refresh_token_value = "google-session-refresh-token";
 
     let session_repo = MockSessionRepository::new();
-    session_repo.insert(Session {
-        id: session_id,
+    let hash =
+        HashedPassword::new(bcrypt::hash(refresh_token_value, TEST_BCRYPT_COST).unwrap()).unwrap();
+    session_repo.insert(Session::new(
+        session_id,
         user_id,
-        refresh_token_hash: bcrypt::hash(refresh_token_value, TEST_BCRYPT_COST).unwrap(),
-        expires_at: Utc::now() + Duration::days(7),
-        is_active: true,
-        created_at: Utc::now(),
-        auth_method: "google_oauth".to_string(),
-    });
+        hash,
+        Utc::now() + Duration::days(7),
+        true,
+        Utc::now(),
+        AuthMethod::GoogleOAuth,
+    ));
     let user_repo = MockUserRepository;
     let jwt_service = MockJwtService {
         claims: RefreshTokenClaims {
@@ -251,17 +254,16 @@ async fn refresh_carries_google_oauth_auth_method_forward_after_rotation() {
     .expect("refresh should succeed");
 
     assert_eq!(
-        result.auth_method, "google_oauth",
+        result.auth_method,
+        AuthMethod::GoogleOAuth,
         "the audit entry's auth_method must reflect the original session's method, \
          not be reset to \"password\" on rotation"
     );
 
-    // The brand new session created by the rotation must also carry the same
-    // auth_method forward -- not just the value returned to the caller.
     let new_session = session_repo
         .find_by_id(result.session_id)
         .await
         .unwrap()
         .expect("rotated session should exist");
-    assert_eq!(new_session.auth_method, "google_oauth");
+    assert_eq!(new_session.auth_method(), &AuthMethod::GoogleOAuth);
 }

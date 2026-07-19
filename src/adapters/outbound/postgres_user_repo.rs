@@ -1,5 +1,10 @@
 use async_trait::async_trait;
 use chrono::Utc;
+use shared::domain::value_objects::auth_method::AuthMethod;
+use shared::domain::value_objects::auth_provider::AuthProvider;
+use shared::domain::value_objects::email::Email;
+use shared::domain::value_objects::event_type::EventType;
+use shared::domain::value_objects::hashed_password::HashedPassword;
 use sqlx::PgPool;
 use uuid::Uuid;
 
@@ -68,10 +73,10 @@ impl UserRepository for PostgresUserRepo {
         )
         .bind(id)
         .bind(&user.username)
-        .bind(&user.email)
+        .bind(user.email.as_ref())
         .bind(&user.display_name)
-        .bind(&user.password_hash)
-        .bind(&user.auth_provider)
+        .bind(user.password_hash.as_ref().map(|h| h.as_ref()))
+        .bind(user.auth_provider.as_str())
         .bind(now)
         .bind(now)
         .fetch_one(&self.pool)
@@ -93,21 +98,14 @@ impl UserRepository for PostgresUserRepo {
         .bind(id)
         .bind(action.user_id)
         .bind(action.session_id)
-        .bind(&action.event_type)
-        .bind(&action.auth_method)
+        .bind(action.event_type.as_str())
+        .bind(action.auth_method.as_str())
         .bind(now)
         .fetch_one(&self.pool)
         .await
         .map_err(|e| AuthError::InternalError(e.to_string()))?;
 
-        Ok(UserAction {
-            id: row.id,
-            user_id: row.user_id,
-            session_id: row.session_id,
-            event_type: row.event_type,
-            auth_method: row.auth_method,
-            created_at: row.created_at,
-        })
+        row.into_user_action()
     }
 }
 
@@ -125,16 +123,25 @@ struct UserRow {
 
 impl UserRow {
     fn into_user(self) -> Result<User, AuthError> {
-        Ok(User {
-            id: self.id,
-            username: self.username,
-            email: self.email,
-            display_name: self.display_name,
-            password_hash: self.password_hash,
-            auth_provider: self.auth_provider,
-            created_at: self.created_at,
-            updated_at: self.updated_at,
-        })
+        let email = Email::new(self.email).map_err(|e| AuthError::InternalError(e.to_string()))?;
+        let auth_provider = AuthProvider::try_from(self.auth_provider.as_str())
+            .map_err(|e| AuthError::InternalError(e))?;
+        let password_hash = self
+            .password_hash
+            .map(|h| HashedPassword::new(h))
+            .transpose()
+            .map_err(|e| AuthError::InternalError(e))?;
+
+        Ok(User::new(
+            self.id,
+            self.username,
+            email,
+            self.display_name,
+            password_hash,
+            auth_provider,
+            self.created_at,
+            self.updated_at,
+        ))
     }
 }
 
@@ -146,4 +153,22 @@ struct UserActionRow {
     event_type: String,
     auth_method: String,
     created_at: chrono::DateTime<Utc>,
+}
+
+impl UserActionRow {
+    fn into_user_action(self) -> Result<UserAction, AuthError> {
+        let event_type = EventType::try_from(self.event_type.as_str())
+            .map_err(|e| AuthError::InternalError(e))?;
+        let auth_method = AuthMethod::try_from(self.auth_method.as_str())
+            .map_err(|e| AuthError::InternalError(e))?;
+
+        Ok(UserAction::new(
+            self.id,
+            self.user_id,
+            self.session_id,
+            event_type,
+            auth_method,
+            self.created_at,
+        ))
+    }
 }
