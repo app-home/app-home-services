@@ -6,13 +6,18 @@ use uuid::Uuid;
 
 fn create_test_user(password_hash: Option<HashedPassword>) -> User {
     let email = Email::new("test@example.com").unwrap();
+    let auth_provider = if password_hash.is_some() {
+        AuthProvider::Local
+    } else {
+        AuthProvider::Google
+    };
     User::new(
         Uuid::now_v7(),
         Some("testuser".to_string()),
         email,
         "Test User".to_string(),
         password_hash,
-        AuthProvider::Local,
+        auth_provider,
         chrono::Utc::now(),
         chrono::Utc::now(),
     )

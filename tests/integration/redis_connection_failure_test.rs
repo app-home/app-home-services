@@ -21,8 +21,8 @@ use std::net::TcpListener;
 use std::process::Command;
 use std::time::Duration;
 
-use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
 use app_home_services::application::ports::rate_limiter::RateLimiter;
+use auth::adapters::redis_rate_limiter::RedisRateLimiter;
 
 /// Asks the OS for a free TCP port by binding to port 0 and reading back what it
 /// assigned, then immediately releasing it. There's an inherent small race between

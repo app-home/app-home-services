@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use app_home_services::domain::services::password_verification::verify_password_timing_safe;
 use app_home_services::domain::entities::user::User;
+use app_home_services::domain::services::password_verification::verify_password_timing_safe;
 use shared::domain::value_objects::auth_provider::AuthProvider;
 use shared::domain::value_objects::email::Email;
 use shared::domain::value_objects::hashed_password::HashedPassword;
@@ -11,13 +11,18 @@ const MAX_RELATIVE_DIFFERENCE: f64 = 0.5;
 
 fn make_user(password_hash: Option<HashedPassword>) -> User {
     let email = Email::new("alice@example.com").unwrap();
+    let auth_provider = if password_hash.is_some() {
+        AuthProvider::Local
+    } else {
+        AuthProvider::Google
+    };
     User::new(
         uuid::Uuid::now_v7(),
         Some("alice".to_string()),
         email,
         "Alice".to_string(),
         password_hash,
-        AuthProvider::Local,
+        auth_provider,
         chrono::Utc::now(),
         chrono::Utc::now(),
     )

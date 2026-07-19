@@ -1,6 +1,6 @@
 use utoipa::OpenApi;
 
-use app_home_services::adapters::inbound::api_doc::ApiDoc;
+use app_home_services::api_doc::ApiDoc;
 
 fn spec_json() -> serde_json::Value {
     let spec = ApiDoc::openapi();
@@ -69,6 +69,10 @@ fn openapi_includes_all_expected_dtos() {
         "StatusResponse",
         "HealthResponse",
         "ErrorResponse",
+        "ProfileResponse",
+        "UpdateProfileRequest",
+        "UserResponse",
+        "UpdateRoleRequest",
     ];
     for name in &expected {
         assert!(schemas.contains_key(*name), "Missing schema: {name}");

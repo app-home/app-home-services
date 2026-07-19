@@ -5,8 +5,8 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
 use app_home_services::application::ports::rate_limiter::RateLimiter;
+use auth::adapters::redis_rate_limiter::RedisRateLimiter;
 
 fn test_ip(last_octet: u8) -> IpAddr {
     // Distinct per-test IP (in the documentation/test range) so tests running against

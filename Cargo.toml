@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/shared"]
+members = ["crates/shared", "crates/auth", "crates/infrastructure", "crates/profiles", "crates/admin"]
 
 [package]
 name = "app-home-services"
@@ -9,7 +9,12 @@ edition = "2024"
 description = "App Home Services - User Authentication"
 
 [dependencies]
+auth = { path = "crates/auth" }
 shared = { path = "crates/shared" }
+infrastructure = { path = "crates/infrastructure" }
+profiles = { path = "crates/profiles" }
+admin = { path = "crates/admin" }
+
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.9", features = ["postgres", "uuid", "runtime-tokio", "chrono", "migrate"] }
@@ -34,3 +39,4 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 
 [dev-dependencies]
 tokio-test = "0.4"
+async-trait = "0.1"

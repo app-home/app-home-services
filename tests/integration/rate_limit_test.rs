@@ -9,8 +9,8 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
 use app_home_services::application::ports::rate_limiter::RateLimiter;
+use auth::adapters::redis_rate_limiter::RedisRateLimiter;
 
 /// Deletes the rate-limit counters for the test IP in both the login and
 /// refresh Redis namespaces, so the next HTTP test starts with a clean slate

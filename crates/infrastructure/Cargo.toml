@@ -1,0 +1,16 @@
+[package]
+name = "infrastructure"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shared = { path = "../shared" }
+auth = { path = "../auth" }
+sqlx = { version = "0.9", features = ["postgres", "runtime-tokio"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+metrics-exporter-prometheus = "0.18"
+redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
+tokio = { version = "1", features = ["sync", "rt", "time", "macros"] }
+uuid = { version = "1", features = ["v7"] }
+chrono = { version = "0.4" }

@@ -5,9 +5,7 @@
 // email_verified check) is independent of JWT signature verification / JWKS
 // fetching, and doing it this way needs no network access to Google.
 
-use app_home_services::adapters::outbound::google_auth_provider::{
-    GoogleClaims, validate_google_claims,
-};
+use auth::adapters::google_auth_provider::{GoogleClaims, validate_google_claims};
 
 fn base_claims() -> GoogleClaims {
     GoogleClaims {

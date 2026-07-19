@@ -1,4 +1,4 @@
-use app_home_services::adapters::inbound::responses::{
+use auth::adapters::inbound::responses::{
     AuthTokensResponse, ErrorResponse, GoogleAuthResponse, HealthResponse, RefreshResponse,
     StatusResponse,
 };

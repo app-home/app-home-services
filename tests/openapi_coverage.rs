@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use utoipa::OpenApi;
 
-use app_home_services::adapters::inbound::api_doc::ApiDoc;
+use app_home_services::api_doc::ApiDoc;
 
 /// The authoritative set of (method, path) pairs that must appear in the spec
 /// per `data-model.md` and the operational-endpoint policy (FR-015).
@@ -12,6 +12,11 @@ const DOCUMENTED_PATH_METHODS: &[(&str, &str)] = &[
     ("POST", "/api/auth/logout"),
     ("POST", "/api/auth/refresh"),
     ("GET", "/api/health"),
+    ("GET", "/api/profile"),
+    ("PUT", "/api/profile"),
+    ("GET", "/api/admin/users"),
+    ("GET", "/api/admin/users/{id}"),
+    ("PUT", "/api/admin/users/{id}/role"),
 ];
 
 fn spec_paths() -> Vec<(String, Vec<String>)> {
@@ -24,6 +29,9 @@ fn spec_paths() -> Vec<(String, Vec<String>)> {
         }
         if item.get.is_some() {
             methods.push("GET".to_string());
+        }
+        if item.put.is_some() {
+            methods.push("PUT".to_string());
         }
         entries.push((path.clone(), methods));
     }

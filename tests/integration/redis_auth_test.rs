@@ -23,7 +23,7 @@ use std::net::TcpListener;
 use std::process::Command;
 use std::time::Duration;
 
-use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
+use auth::adapters::redis_rate_limiter::RedisRateLimiter;
 
 const TEST_PASSWORD: &str = "test-password-for-apphome-redis-auth-check";
 

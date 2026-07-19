@@ -2,8 +2,11 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use auth::domain::aggregate::UserAggregate;
 use chrono::{Duration, Utc};
 use shared::domain::value_objects::auth_method::AuthMethod;
+use shared::domain::value_objects::auth_provider::AuthProvider;
+use shared::domain::value_objects::email::Email;
 use shared::domain::value_objects::hashed_password::HashedPassword;
 use uuid::Uuid;
 
@@ -17,21 +20,21 @@ use app_home_services::domain::entities::session::{NewSession, Session};
 use app_home_services::domain::entities::user::{NewUser, User};
 use app_home_services::domain::entities::user_action::{NewUserAction, UserAction};
 use app_home_services::domain::errors::AuthError;
-use app_home_services::infrastructure::config::settings::Settings;
+use auth::config::auth_settings::AuthSettings;
+
+type SharedSessions = std::sync::Arc<Mutex<HashMap<Uuid, Session>>>;
+
+fn shared_sessions() -> SharedSessions {
+    std::sync::Arc::new(Mutex::new(HashMap::new()))
+}
 
 struct MockSessionRepository {
-    sessions: Mutex<HashMap<Uuid, Session>>,
+    sessions: SharedSessions,
 }
 
 impl MockSessionRepository {
-    fn new() -> Self {
-        Self {
-            sessions: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn insert(&self, session: Session) {
-        self.sessions.lock().unwrap().insert(session.id(), session);
+    fn new(sessions: SharedSessions) -> Self {
+        Self { sessions }
     }
 }
 
@@ -84,9 +87,32 @@ impl SessionRepository for MockSessionRepository {
         }
         Ok(())
     }
+
+    async fn sessions_for_user(&self, user_id: Uuid) -> Result<Vec<Session>, AuthError> {
+        Ok(self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| s.user_id() == user_id)
+            .cloned()
+            .collect())
+    }
 }
 
-struct MockUserRepository;
+struct MockUserRepository {
+    sessions: SharedSessions,
+}
+
+impl MockUserRepository {
+    fn new(sessions: SharedSessions) -> Self {
+        Self { sessions }
+    }
+
+    fn insert(&self, session: Session) {
+        self.sessions.lock().unwrap().insert(session.id(), session);
+    }
+}
 
 #[async_trait]
 impl UserRepository for MockUserRepository {
@@ -104,6 +130,68 @@ impl UserRepository for MockUserRepository {
     }
     async fn create_user_action(&self, _action: NewUserAction) -> Result<UserAction, AuthError> {
         unimplemented!("not used by refresh_token")
+    }
+
+    async fn find_aggregate_by_id(&self, id: Uuid) -> Result<Option<UserAggregate>, AuthError> {
+        let sessions: Vec<Session> = self
+            .sessions
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|s| s.user_id() == id)
+            .cloned()
+            .collect();
+
+        let user = User::new(
+            id,
+            Some("testuser".to_string()),
+            Email::new("test@example.com").unwrap(),
+            "Test User".to_string(),
+            None,
+            AuthProvider::Google,
+            Utc::now(),
+            Utc::now(),
+        );
+
+        Ok(Some(UserAggregate::new(user, sessions)))
+    }
+
+    async fn find_aggregate_by_username(
+        &self,
+        _username: &str,
+    ) -> Result<Option<UserAggregate>, AuthError> {
+        unimplemented!("not used by refresh_token")
+    }
+
+    async fn find_aggregate_by_email(
+        &self,
+        _email: &str,
+    ) -> Result<Option<UserAggregate>, AuthError> {
+        unimplemented!("not used by refresh_token")
+    }
+
+    async fn save_aggregate(
+        &self,
+        aggregate: &mut UserAggregate,
+        new_sessions: &[NewSession],
+    ) -> Result<(), AuthError> {
+        let mut stored = self.sessions.lock().unwrap();
+        for session in &aggregate.sessions {
+            stored.insert(session.id(), session.clone());
+        }
+        for ns in new_sessions {
+            let session = Session::new(
+                ns.id,
+                ns.user_id,
+                ns.refresh_token_hash.clone(),
+                ns.expires_at,
+                true,
+                Utc::now(),
+                ns.auth_method,
+            );
+            stored.insert(session.id(), session);
+        }
+        Ok(())
     }
 }
 
@@ -132,23 +220,15 @@ impl JwtService for MockJwtService {
     }
 }
 
-fn test_settings() -> Settings {
-    Settings {
-        database_url: String::new(),
-        server_host: "0.0.0.0".to_string(),
-        server_port: 3000,
+fn test_settings() -> AuthSettings {
+    AuthSettings {
         default_user_username: "admin".to_string(),
         default_user_password: "irrelevant".to_string(),
         default_user_email: "admin@example.com".to_string(),
         google_client_id: String::new(),
         jwt_secret: "irrelevant".to_string(),
-        rate_limit_max_attempts: 10,
-        rate_limit_window_seconds: 300,
         access_token_expiry_minutes: 15,
         refresh_token_expiry_days: 7,
-        cors_allowed_origins: String::new(),
-        trusted_proxy_ips: vec![],
-        redis_url: None,
     }
 }
 
@@ -160,11 +240,11 @@ async fn reusing_invalidated_refresh_token_revokes_all_sessions_for_user() {
     let old_session_id = Uuid::now_v7();
     let other_session_id = Uuid::now_v7();
 
-    let session_repo = MockSessionRepository::new();
+    let sessions = shared_sessions();
 
     let old_hash =
         HashedPassword::new(bcrypt::hash("old-refresh-token", TEST_BCRYPT_COST).unwrap()).unwrap();
-    session_repo.insert(Session::new(
+    let old_session = Session::new(
         old_session_id,
         user_id,
         old_hash,
@@ -172,11 +252,12 @@ async fn reusing_invalidated_refresh_token_revokes_all_sessions_for_user() {
         false,
         Utc::now(),
         AuthMethod::Password,
-    ));
+    );
 
     let other_hash =
-        HashedPassword::new(bcrypt::hash("other-refresh-token", TEST_BCRYPT_COST).unwrap()).unwrap();
-    session_repo.insert(Session::new(
+        HashedPassword::new(bcrypt::hash("other-refresh-token", TEST_BCRYPT_COST).unwrap())
+            .unwrap();
+    let other_session = Session::new(
         other_session_id,
         user_id,
         other_hash,
@@ -184,7 +265,12 @@ async fn reusing_invalidated_refresh_token_revokes_all_sessions_for_user() {
         true,
         Utc::now(),
         AuthMethod::Password,
-    ));
+    );
+
+    let session_repo = MockSessionRepository::new(sessions.clone());
+    let user_repo = MockUserRepository::new(sessions);
+    user_repo.insert(old_session);
+    user_repo.insert(other_session);
 
     let jwt_service = MockJwtService {
         claims: RefreshTokenClaims {
@@ -194,11 +280,9 @@ async fn reusing_invalidated_refresh_token_revokes_all_sessions_for_user() {
             iat: 1,
         },
     };
-    let user_repo = MockUserRepository;
     let settings = test_settings();
 
     let result = refresh_token(
-        &session_repo,
         &user_repo,
         &jwt_service,
         "stolen-old-refresh-token",
@@ -225,12 +309,12 @@ async fn legitimate_refresh_of_an_active_session_does_not_touch_other_sessions()
     let active_session_id = Uuid::now_v7();
     let other_session_id = Uuid::now_v7();
 
-    let session_repo = MockSessionRepository::new();
+    let sessions = shared_sessions();
     let real_refresh_token = "real-refresh-token";
 
     let active_hash =
         HashedPassword::new(bcrypt::hash(real_refresh_token, TEST_BCRYPT_COST).unwrap()).unwrap();
-    session_repo.insert(Session::new(
+    let active_session = Session::new(
         active_session_id,
         user_id,
         active_hash,
@@ -238,11 +322,11 @@ async fn legitimate_refresh_of_an_active_session_does_not_touch_other_sessions()
         true,
         Utc::now(),
         AuthMethod::Password,
-    ));
+    );
 
     let other_hash =
         HashedPassword::new(bcrypt::hash("unrelated-token", TEST_BCRYPT_COST).unwrap()).unwrap();
-    session_repo.insert(Session::new(
+    let other_session = Session::new(
         other_session_id,
         user_id,
         other_hash,
@@ -250,7 +334,12 @@ async fn legitimate_refresh_of_an_active_session_does_not_touch_other_sessions()
         true,
         Utc::now(),
         AuthMethod::Password,
-    ));
+    );
+
+    let session_repo = MockSessionRepository::new(sessions.clone());
+    let user_repo = MockUserRepository::new(sessions);
+    user_repo.insert(active_session);
+    user_repo.insert(other_session);
 
     let jwt_service = MockJwtService {
         claims: RefreshTokenClaims {
@@ -260,17 +349,9 @@ async fn legitimate_refresh_of_an_active_session_does_not_touch_other_sessions()
             iat: 1,
         },
     };
-    let user_repo = MockUserRepository;
     let settings = test_settings();
 
-    let result = refresh_token(
-        &session_repo,
-        &user_repo,
-        &jwt_service,
-        real_refresh_token,
-        &settings,
-    )
-    .await;
+    let result = refresh_token(&user_repo, &jwt_service, real_refresh_token, &settings).await;
 
     assert!(
         result.is_ok(),

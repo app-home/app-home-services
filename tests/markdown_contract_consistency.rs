@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use utoipa::OpenApi;
 
-use app_home_services::adapters::inbound::api_doc::ApiDoc;
+use app_home_services::api_doc::ApiDoc;
 
 #[derive(Debug)]
 struct ContractEndpoint {
@@ -79,6 +79,15 @@ fn spec_paths() -> Vec<(String, Vec<String>, Vec<u16>)> {
         }
         if let Some(op) = &item.get {
             methods.push("GET".to_string());
+            status_codes.extend(
+                op.responses
+                    .responses
+                    .keys()
+                    .filter_map(|k| k.parse::<u16>().ok()),
+            );
+        }
+        if let Some(op) = &item.put {
+            methods.push("PUT".to_string());
             status_codes.extend(
                 op.responses
                     .responses

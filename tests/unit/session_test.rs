@@ -9,13 +9,16 @@ fn test_new_session_creation() {
     let user_id = Uuid::now_v7();
     let expires_at = Utc::now() + Duration::hours(1);
     let hash = HashedPassword::new("hashed_refresh_token").unwrap();
-    let session = NewSession::new(Uuid::now_v7(), user_id, hash, expires_at, AuthMethod::Password);
+    let session = NewSession::new(
+        Uuid::now_v7(),
+        user_id,
+        hash,
+        expires_at,
+        AuthMethod::Password,
+    );
 
     assert_eq!(session.user_id, user_id);
-    assert_eq!(
-        session.refresh_token_hash.as_ref(),
-        "hashed_refresh_token"
-    );
+    assert_eq!(session.refresh_token_hash.as_ref(), "hashed_refresh_token");
     assert_eq!(session.auth_method, AuthMethod::Password);
     assert!(session.validate().is_ok());
 }
