@@ -1,7 +1,7 @@
 FROM docker.io/rustlang/rust:nightly-slim AS builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config libssl-dev \
+    pkg-config libssl-dev curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
