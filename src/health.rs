@@ -1,6 +1,6 @@
 use axum::Json;
 
-use crate::adapters::inbound::responses::HealthResponse;
+use shared::api::HealthResponse;
 
 #[utoipa::path(
     get,

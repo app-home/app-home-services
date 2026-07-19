@@ -21,7 +21,7 @@ use app_home_services::infrastructure::rate_limiter_setup::{
 };
 use auth::adapters::audit_event_handler::AuditEventHandler;
 use auth::adapters::google_auth_provider::GoogleAuthProvider;
-use auth::adapters::inbound::health_routes::health_check;
+use app_home_services::health::health_check;
 use auth::adapters::inbound::login_routes::login_password_handler;
 use auth::adapters::inbound::logout_routes::logout_handler;
 use auth::adapters::inbound::oauth_callback::login_google_handler;

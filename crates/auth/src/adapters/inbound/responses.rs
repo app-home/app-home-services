@@ -29,11 +29,4 @@ pub struct StatusResponse {
     pub status: String,
 }
 
-#[derive(Serialize, Deserialize, ToSchema)]
-pub struct HealthResponse {
-    pub status: String,
-    #[schema(example = "0.1.0")]
-    pub version: String,
-}
-
-pub use shared::api::ErrorResponse;
+pub use shared::api::{ErrorResponse, HealthResponse};
