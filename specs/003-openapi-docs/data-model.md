@@ -125,7 +125,7 @@ Notes:
 | OpenAPI version | 3.x (emitted by `utoipa` 5.x) |
 | `info.title` | "App Home Services API" |
 | `info.version` | crate version (`0.1.0`) |
-| `info.description` | Authentication service API |
+| `info.description` | Modular monolith API — bounded contexts: Authentication, Profiles, Admin, Health |
 | `paths` | the 5 documented endpoints above |
 | `components.schemas` | all request + response DTOs above |
 | `components.securitySchemes` | `bearer_jwt` |
