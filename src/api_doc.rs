@@ -29,6 +29,7 @@ use profiles::adapters::inbound::responses::{ProfileResponse, UpdateProfileReque
         (name = "Authentication", description = "Authentication & session management"),
         (name = "Profiles", description = "User profile management"),
         (name = "Admin", description = "Admin user management"),
+        (name = "Health", description = "Service health monitoring"),
     ),
     servers(
         (url = "http://localhost:3000", description = "Local development"),
