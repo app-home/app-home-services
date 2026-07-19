@@ -141,6 +141,7 @@ fn user_to_response(user: crate::domain::entities::admin_user::AdminUser) -> Use
 #[utoipa::path(
     get,
     path = "/api/admin/users",
+    tag = "Admin",
     security(("bearer_jwt" = [])),
     responses(
         (status = 200, description = "List of users", body = Vec<UserResponse>),
@@ -187,6 +188,7 @@ pub async fn list_users_handler(
 #[utoipa::path(
     get,
     path = "/api/admin/users/{id}",
+    tag = "Admin",
     security(("bearer_jwt" = [])),
     params(
         ("id" = String, Path, description = "User UUID"),
@@ -242,6 +244,7 @@ pub async fn get_user_handler(
 #[utoipa::path(
     put,
     path = "/api/admin/users/{id}/role",
+    tag = "Admin",
     security(("bearer_jwt" = [])),
     request_body = UpdateRoleRequest,
     params(

@@ -57,6 +57,7 @@ pub fn resolve_client_ip(
 #[utoipa::path(
     post,
     path = "/api/auth/login/password",
+    tag = "Authentication",
     request_body = PasswordLoginRequest,
     responses(
         (status = 200, description = "Login successful", body = AuthTokensResponse),

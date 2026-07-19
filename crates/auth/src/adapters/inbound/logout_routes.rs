@@ -23,6 +23,7 @@ pub struct LogoutRequest {
 #[utoipa::path(
     post,
     path = "/api/auth/logout",
+    tag = "Authentication",
     request_body = LogoutRequest,
     security(("bearer_jwt" = [])),
     responses(
