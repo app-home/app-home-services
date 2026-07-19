@@ -6,7 +6,7 @@
 
 ## Summary
 
-Add first-class, code-generated OpenAPI documentation to the existing Axum authentication service and serve it both as a machine-readable document (`/api-docs/openapi.json`) and an interactive UI (`/swagger-ui`). The specification is generated from the implementation via `utoipa` annotations, rendered by `utoipa-swagger-ui`. All public endpoints get typed request/response schemas (replacing today's ad-hoc `serde_json::json!` responses with `#[derive(Serialize, ToSchema)]` DTOs), every status code is documented, and a Bearer JWT security scheme is registered for protected endpoints. The existing Markdown contracts under `specs/*/contracts` are preserved as complementary narrative, and an automated consistency + coverage check keeps the two aligned over time.
+Add first-class, code-generated OpenAPI documentation to the existing Axum modular monolith and serve it both as a machine-readable document (`/api-docs/openapi.json`) and an interactive UI (`/swagger-ui`). The specification is generated from the implementation via `utoipa` annotations, rendered by `utoipa-swagger-ui`. All public endpoints get typed request/response schemas (replacing today's ad-hoc `serde_json::json!` responses with `#[derive(Serialize, ToSchema)]` DTOs), every status code is documented, and a Bearer JWT security scheme is registered for protected endpoints. The existing Markdown contracts under `specs/*/contracts` are preserved as complementary narrative, and an automated consistency + coverage check keeps the two aligned over time.
 
 ## Technical Context
 
@@ -20,7 +20,7 @@ Add first-class, code-generated OpenAPI documentation to the existing Axum authe
 
 **Target Platform**: Linux server (containerized; see `Containerfile` / `compose.yaml`).
 
-**Project Type**: Single Rust web service (hexagonal architecture).
+**Project Type**: Modular Rust monolith with hexagonal architecture (bounded contexts).
 
 **Performance Goals**: The spec document is generated once at startup (or lazily, cached) and served as a static value; serving `/api-docs/openapi.json` must be O(1) with no per-request generation cost. No measurable impact on existing auth endpoint latency.
 
@@ -98,7 +98,7 @@ scripts/
 └── (optional) check-docs-consistency  # Wraps the consistency test for CI/build workflow
 ```
 
-**Structure Decision**: Single-project Rust web service following the existing hexagonal layout mandated by the constitution. All new code is confined to `src/adapters/inbound/` (DTOs + `ApiDoc`) and `src/main.rs` (route wiring), plus `tests/`. No changes to `domain/`, `application/`, `infrastructure/`, or the database. This keeps the OpenAPI concern entirely in the inbound adapter, preserving the inward dependency rule.
+**Structure Decision**: Modular Rust monolith following the existing hexagonal layout mandated by the constitution. All new code is confined to `src/adapters/inbound/` (DTOs + `ApiDoc`) and `src/main.rs` (route wiring), plus `tests/`. No changes to `domain/`, `application/`, `infrastructure/`, or the database. This keeps the OpenAPI concern entirely in the inbound adapter, preserving the inward dependency rule.
 
 ## Key Design Decisions (feed Phase 0 / Phase 1)
 

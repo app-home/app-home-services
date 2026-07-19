@@ -24,7 +24,7 @@ use profiles::adapters::inbound::responses::{ProfileResponse, UpdateProfileReque
 
 #[derive(OpenApi)]
 #[openapi(
-    info(description = "App Home Services API"),
+    info(description = "App Home — Modular Monolith (Authentication, Profiles, Admin, Health)"),
     tags(
         (name = "Authentication", description = "Authentication & session management"),
         (name = "Profiles", description = "User profile management"),

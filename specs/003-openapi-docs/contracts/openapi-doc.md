@@ -21,13 +21,13 @@ Serves the machine-readable OpenAPI document.
   - `openapi` version field present (3.x).
   - `info.title`, `info.version` populated.
   - `info.description` = `"App Home Services API"`.
-  - `tags` includes `Authentication`, `Profiles`, and `Admin` with descriptions.
+  - `tags` includes `Authentication`, `Profiles`, `Admin`, and `Health` with descriptions.
   - `paths` contains all documented public endpoints (grouped by tag):
     - `POST /api/auth/login/password` (Authentication)
     - `POST /api/auth/login/google` (Authentication)
     - `POST /api/auth/logout` (Authentication)
     - `POST /api/auth/refresh` (Authentication)
-    - `GET /api/health` (Authentication)
+    - `GET /api/health` (Health)
     - `GET /api/profile` (Profiles)
     - `PUT /api/profile` (Profiles)
     - `GET /api/admin/users` (Admin)
@@ -59,7 +59,7 @@ Serves the interactive Swagger UI that renders `/api-docs/openapi.json`.
 - **Auth**: none
 - **Response 200**: `text/html` (UI shell) plus static assets served by `utoipa-swagger-ui`.
 - **Behavior guarantees**:
-  - Lists every documented endpoint grouped by tag (Authentication, Profiles, Admin)
+  - Lists every documented endpoint grouped by tag (Authentication, Profiles, Admin, Health)
     with method, path, summary, request schema (where applicable), and response schemas.
   - Provides an "Authorize" affordance for the Bearer JWT scheme; protected endpoints show a
     padlock / required-auth indicator.

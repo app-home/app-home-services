@@ -48,7 +48,7 @@ curl http://localhost:3000/api-docs/openapi.json -o openapi.json
 ```
 
 Expected: HTTP 200, `application/json`. The document satisfies the content guarantees in
-`contracts/openapi-doc.md` (5 documented paths, `bearer_jwt` scheme, `/metrics` absent).
+`contracts/openapi-doc.md` (10 documented paths, `bearer_jwt` scheme, `/metrics` absent).
 
 Validate it (any standard OpenAPI validator), e.g.:
 
@@ -67,7 +67,7 @@ http://localhost:3000/swagger-ui
 ```
 
 Expected:
-- All 5 documented endpoints listed with method, path, request/response schemas, and status codes.
+- All 10 documented endpoints listed with method, path, request/response schemas, and status codes.
 - `POST /api/auth/logout` shows a required-auth (padlock) indicator; an **Authorize** button accepts a Bearer token.
 
 ## 5. Try a live request from the UI (SC-005)

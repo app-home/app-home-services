@@ -14,7 +14,7 @@
 
 ## Path Conventions
 
-Single Rust project: source under `src/`, integration tests under `tests/` (project root).
+Modular Rust monolith: source under `src/` (composition root) + workspace crates under `crates/`, integration tests under `tests/` (project root).
 
 ---
 
@@ -58,7 +58,7 @@ Single Rust project: source under `src/`, integration tests under `tests/` (proj
 
 **Goal**: A consumer can open `/swagger-ui` and see every public endpoint with its schemas and status codes, then issue live "Try it out" requests.
 
-**Independent Test**: Start the service, open `http://localhost:3000/swagger-ui` in a browser, confirm 5 endpoints are listed (4 auth + health), with `/metrics` absent; execute the password-login "Try it out" with seeded credentials and observe a 200 response matching `AuthTokensResponse`; confirm the logout endpoint shows a required-auth padlock.
+**Independent Test**: Start the service, open `http://localhost:3000/swagger-ui` in a browser, confirm 10 endpoints are listed (4 auth + 2 profiles + 3 admin + health), with `/metrics` absent; execute the password-login "Try it out" with seeded credentials and observe a 200 response matching `AuthTokensResponse`; confirm the logout endpoint shows a required-auth padlock.
 
 ### Tests for User Story 1 (write first, FAIL before annotations are added)
 
