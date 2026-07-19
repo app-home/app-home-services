@@ -9,8 +9,8 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use app_home_services::adapters::outbound::redis_rate_limiter::RedisRateLimiter;
 use app_home_services::application::ports::rate_limiter::RateLimiter;
+use auth::adapters::redis_rate_limiter::RedisRateLimiter;
 
 /// Deletes the rate-limit counters for 127.0.0.1 in both the login and refresh
 /// Redis namespaces so this test's calls are not blocked by state from a previous test.
@@ -94,8 +94,8 @@ async fn test_refresh_with_invalid_token_returns_401() {
 async fn test_refresh_with_nonexistent_session_returns_401_not_500() {
     reset_rate_limiters().await;
 
-    use app_home_services::adapters::outbound::jwt_service::JwtServiceImpl;
     use app_home_services::application::ports::jwt_service::JwtService;
+    use auth::adapters::jwt_service::JwtServiceImpl;
     use uuid::Uuid;
 
     let jwt_secret = std::env::var("JWT_SECRET")

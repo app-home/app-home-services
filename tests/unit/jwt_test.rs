@@ -1,7 +1,7 @@
 use uuid::Uuid;
 
-use app_home_services::adapters::outbound::jwt_service::JwtServiceImpl;
 use app_home_services::application::ports::jwt_service::JwtService;
+use auth::adapters::jwt_service::JwtServiceImpl;
 
 fn create_service() -> JwtServiceImpl {
     JwtServiceImpl::new("test-secret-key-that-is-long-enough-for-hmac", 15, 7)

@@ -1,0 +1,22 @@
+[package]
+name = "auth"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+shared = { path = "../shared" }
+uuid = { version = "1", features = ["v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+bcrypt = "0.19"
+thiserror = "2"
+async-trait = "0.1"
+sqlx = { version = "0.9", features = ["postgres", "uuid", "runtime-tokio", "chrono"] }
+reqwest = { version = "0.13", features = ["json"] }
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+axum = "0.8"
+tokio = { version = "1", features = ["sync", "rt", "time", "macros", "net"] }
+redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
+serde_json = "1"
+utoipa = { version = "5.5", features = ["uuid", "preserve_path_order"] }

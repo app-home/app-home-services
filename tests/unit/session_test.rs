@@ -1,124 +1,118 @@
 use app_home_services::domain::entities::session::{NewSession, Session};
 use chrono::{Duration, Utc};
+use shared::domain::value_objects::auth_method::AuthMethod;
+use shared::domain::value_objects::hashed_password::HashedPassword;
 use uuid::Uuid;
 
 #[test]
 fn test_new_session_creation() {
     let user_id = Uuid::now_v7();
     let expires_at = Utc::now() + Duration::hours(1);
+    let hash = HashedPassword::new("hashed_refresh_token").unwrap();
     let session = NewSession::new(
         Uuid::now_v7(),
         user_id,
-        "hashed_refresh_token".to_string(),
+        hash,
         expires_at,
-        "password",
+        AuthMethod::Password,
     );
 
     assert_eq!(session.user_id, user_id);
-    assert_eq!(session.refresh_token_hash, "hashed_refresh_token");
-    assert_eq!(session.auth_method, "password");
+    assert_eq!(session.refresh_token_hash.as_ref(), "hashed_refresh_token");
+    assert_eq!(session.auth_method, AuthMethod::Password);
     assert!(session.validate().is_ok());
 }
 
 #[test]
-fn test_new_session_empty_hash_fails_validation() {
-    let session = NewSession {
-        id: Uuid::now_v7(),
-        user_id: Uuid::now_v7(),
-        refresh_token_hash: String::new(),
-        expires_at: Utc::now() + Duration::hours(1),
-        auth_method: "password".to_string(),
-    };
-
-    assert!(session.validate().is_err());
+fn test_hashed_password_rejects_empty_string() {
+    assert!(HashedPassword::new("").is_err());
 }
 
 #[test]
 fn test_new_session_expired_fails_validation() {
-    let session = NewSession {
-        id: Uuid::now_v7(),
-        user_id: Uuid::now_v7(),
-        refresh_token_hash: "hash".to_string(),
-        expires_at: Utc::now() - Duration::hours(1),
-        auth_method: "password".to_string(),
-    };
+    let hash = HashedPassword::new("hash").unwrap();
+    let session = NewSession::new(
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        hash,
+        Utc::now() - Duration::hours(1),
+        AuthMethod::Password,
+    );
 
     assert!(session.validate().is_err());
 }
 
 #[test]
-fn test_new_session_empty_auth_method_fails_validation() {
-    let session = NewSession {
-        id: Uuid::now_v7(),
-        user_id: Uuid::now_v7(),
-        refresh_token_hash: "hash".to_string(),
-        expires_at: Utc::now() + Duration::hours(1),
-        auth_method: String::new(),
-    };
-
-    assert!(session.validate().is_err());
+fn test_auth_method_enum_has_valid_variants() {
+    assert_ne!(AuthMethod::Password.as_str(), "");
+    assert_ne!(AuthMethod::GoogleOAuth.as_str(), "");
+    assert!(AuthMethod::Password.as_str() == "password");
+    assert!(AuthMethod::GoogleOAuth.as_str() == "google_oauth");
 }
 
 #[test]
 fn test_session_is_expired() {
-    let session = Session {
-        id: Uuid::now_v7(),
-        user_id: Uuid::now_v7(),
-        refresh_token_hash: "hash".to_string(),
-        expires_at: Utc::now() - Duration::hours(1),
-        is_active: true,
-        created_at: Utc::now() - Duration::hours(2),
-        auth_method: "password".to_string(),
-    };
+    let hash = HashedPassword::new("hash").unwrap();
+    let session = Session::new(
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        hash,
+        Utc::now() - Duration::hours(1),
+        true,
+        Utc::now() - Duration::hours(2),
+        AuthMethod::Password,
+    );
 
     assert!(session.is_expired());
 }
 
 #[test]
 fn test_session_is_not_expired() {
-    let session = Session {
-        id: Uuid::now_v7(),
-        user_id: Uuid::now_v7(),
-        refresh_token_hash: "hash".to_string(),
-        expires_at: Utc::now() + Duration::hours(1),
-        is_active: true,
-        created_at: Utc::now(),
-        auth_method: "google_oauth".to_string(),
-    };
+    let hash = HashedPassword::new("hash").unwrap();
+    let session = Session::new(
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        hash,
+        Utc::now() + Duration::hours(1),
+        true,
+        Utc::now(),
+        AuthMethod::GoogleOAuth,
+    );
 
     assert!(!session.is_expired());
 }
 
 #[test]
 fn test_session_invalidate() {
-    let mut session = Session {
-        id: Uuid::now_v7(),
-        user_id: Uuid::now_v7(),
-        refresh_token_hash: "hash".to_string(),
-        expires_at: Utc::now() + Duration::hours(1),
-        is_active: true,
-        created_at: Utc::now(),
-        auth_method: "password".to_string(),
-    };
+    let hash = HashedPassword::new("hash").unwrap();
+    let mut session = Session::new(
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        hash,
+        Utc::now() + Duration::hours(1),
+        true,
+        Utc::now(),
+        AuthMethod::Password,
+    );
 
-    assert!(session.is_active);
+    assert!(session.is_active());
     session.invalidate();
-    assert!(!session.is_active);
+    assert!(!session.is_active());
 }
 
 #[test]
 fn test_session_invalidate_is_one_way() {
-    let mut session = Session {
-        id: Uuid::now_v7(),
-        user_id: Uuid::now_v7(),
-        refresh_token_hash: "hash".to_string(),
-        expires_at: Utc::now() + Duration::hours(1),
-        is_active: true,
-        created_at: Utc::now(),
-        auth_method: "password".to_string(),
-    };
+    let hash = HashedPassword::new("hash").unwrap();
+    let mut session = Session::new(
+        Uuid::now_v7(),
+        Uuid::now_v7(),
+        hash,
+        Utc::now() + Duration::hours(1),
+        true,
+        Utc::now(),
+        AuthMethod::Password,
+    );
 
     session.invalidate();
-    assert!(!session.is_active);
-    // There is no re-activate method — one-way transition
+    assert!(!session.is_active());
 }

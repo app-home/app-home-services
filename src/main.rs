@@ -2,24 +2,37 @@ use std::net::SocketAddr;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use axum::routing::{get, post};
+use std::sync::Arc;
+
+use axum::{
+    Extension,
+    routing::{get, post, put},
+};
 use utoipa::OpenApi;
 
-use app_home_services::AppState;
-use app_home_services::adapters::inbound::api_doc::ApiDoc;
-use app_home_services::adapters::inbound::health_routes::health_check;
-use app_home_services::adapters::inbound::login_routes::login_password_handler;
-use app_home_services::adapters::inbound::logout_routes::logout_handler;
-use app_home_services::adapters::inbound::oauth_callback::login_google_handler;
-use app_home_services::adapters::inbound::refresh_routes::refresh_token_handler;
-use app_home_services::adapters::outbound::google_auth_provider::GoogleAuthProvider;
-use app_home_services::adapters::outbound::jwt_service::JwtServiceImpl;
-use app_home_services::adapters::outbound::postgres_session_repo::PostgresSessionRepo;
-use app_home_services::adapters::outbound::postgres_user_repo::PostgresUserRepo;
-use app_home_services::infrastructure::config::settings::Settings;
+use admin::adapters::inbound::admin_routes::{
+    get_user_handler, list_users_handler, update_user_role_handler,
+};
+use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
+use app_home_services::api_doc::ApiDoc;
+use app_home_services::infrastructure::config::Settings;
 use app_home_services::infrastructure::rate_limiter_setup::{
     RateLimiterErrorCounters, build_rate_limiters,
 };
+use auth::adapters::audit_event_handler::AuditEventHandler;
+use auth::adapters::google_auth_provider::GoogleAuthProvider;
+use auth::adapters::inbound::health_routes::health_check;
+use auth::adapters::inbound::login_routes::login_password_handler;
+use auth::adapters::inbound::logout_routes::logout_handler;
+use auth::adapters::inbound::oauth_callback::login_google_handler;
+use auth::adapters::inbound::refresh_routes::refresh_token_handler;
+use auth::adapters::jwt_service::JwtServiceImpl;
+use auth::adapters::postgres_session_repo::PostgresSessionRepo;
+use auth::adapters::postgres_user_repo::PostgresUserRepo;
+use auth::config::auth_settings::AuthSettings;
+use profiles::adapters::inbound::profile_routes::{get_profile_handler, update_profile_handler};
+use profiles::adapters::outbound::postgres_profile_repo::PostgresProfileRepo;
+use shared::event_bus::EventBus;
 use utoipa_swagger_ui::SwaggerUi;
 
 #[tokio::main]
@@ -35,16 +48,17 @@ async fn main() {
         app_home_services::infrastructure::telemetry::metrics::install_prometheus_recorder();
 
     let settings = Settings::from_env().expect("Failed to load settings");
+    let auth_settings = AuthSettings::from_env().expect("Failed to load auth settings");
 
-    let pool = app_home_services::infrastructure::database::db::create_pool(&settings.database_url)
+    let pool = app_home_services::infrastructure::database::create_pool(&settings.database_url)
         .await
         .expect("Failed to create database pool");
 
-    app_home_services::infrastructure::database::db::run_migrations(&pool)
+    run_migrations(&pool)
         .await
         .expect("Failed to run database migrations");
 
-    if let Err(e) = seed_default_user(&pool, &settings).await {
+    if let Err(e) = seed_default_user(&pool, &auth_settings).await {
         tracing::error!(error = %e, "Default user check failed");
         std::process::exit(1);
     }
@@ -61,12 +75,33 @@ async fn main() {
     }
 
     let user_repo = PostgresUserRepo::new(pool.clone());
-    let session_repo = PostgresSessionRepo::new(pool);
-    let auth_provider = GoogleAuthProvider::new(settings.google_client_id.clone());
+    let session_repo = PostgresSessionRepo::new(pool.clone());
+    let profile_repo = Arc::new(PostgresProfileRepo::new(pool.clone()));
+    let admin_repo = Arc::new(PostgresAdminRepo::new(pool.clone()));
+
+    let (event_bus, mut event_rx) = EventBus::new(256);
+    let audit_handler = AuditEventHandler::new(pool.clone());
+
+    tokio::spawn(async move {
+        use tokio::sync::broadcast::error::RecvError;
+        loop {
+            match event_rx.recv().await {
+                Ok(event) => audit_handler.handle(event).await,
+                Err(RecvError::Closed) => {
+                    tracing::warn!("Event bus closed");
+                    break;
+                }
+                Err(RecvError::Lagged(n)) => {
+                    tracing::warn!(skipped = %n, "Event bus receiver lagged");
+                }
+            }
+        }
+    });
+    let auth_provider = GoogleAuthProvider::new(auth_settings.google_client_id.clone());
     let jwt_service = JwtServiceImpl::new(
-        &settings.jwt_secret,
-        settings.access_token_expiry_minutes,
-        settings.refresh_token_expiry_days,
+        &auth_settings.jwt_secret,
+        auth_settings.access_token_expiry_minutes,
+        auth_settings.refresh_token_expiry_days,
     );
 
     // See build_rate_limiters' docs for why REDIS_URL selects the backend, and why
@@ -87,18 +122,20 @@ async fn main() {
 
     let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
-    let state = AppState::new(
+    let state = auth::AppState::new(
         user_repo,
         session_repo,
         auth_provider,
         jwt_service,
         rate_limiter,
         refresh_rate_limiter,
-        settings,
+        event_bus,
+        auth_settings,
+        settings.trusted_proxy_ips.clone(),
     );
 
     let cors = {
-        let origins_str = &state.settings.cors_allowed_origins;
+        let origins_str = &settings.cors_allowed_origins;
         if origins_str.is_empty() {
             tracing::info!("CORS: same-origin only (no origins configured)");
             tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::AllowOrigin::list(
@@ -126,6 +163,15 @@ async fn main() {
         .route("/api/auth/logout", post(logout_handler))
         .route("/api/auth/refresh", post(refresh_token_handler))
         .route("/api/health", get(health_check))
+        .route(
+            "/api/profile",
+            get(get_profile_handler).put(update_profile_handler),
+        )
+        .route("/api/admin/users", get(list_users_handler))
+        .route("/api/admin/users/{id}", get(get_user_handler))
+        .route("/api/admin/users/{id}/role", put(update_user_role_handler))
+        .layer(Extension(profile_repo))
+        .layer(Extension(admin_repo))
         // Not gated behind auth: Prometheus scrape endpoints are conventionally
         // reached only from inside a private network / the cluster's monitoring
         // namespace, never exposed publicly. If this service is ever reachable from
@@ -189,7 +235,14 @@ fn spawn_rate_limiter_metrics_poller(counters: RateLimiterErrorCounters) {
     });
 }
 
-async fn seed_default_user(pool: &sqlx::PgPool, settings: &Settings) -> Result<bool, String> {
+async fn run_migrations(pool: &sqlx::PgPool) -> Result<(), sqlx::migrate::MigrateError> {
+    sqlx::migrate!("./migrations").run(pool).await
+}
+
+async fn seed_default_user(
+    pool: &sqlx::PgPool,
+    settings: &auth::config::auth_settings::AuthSettings,
+) -> Result<bool, String> {
     let count =
         sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM users WHERE auth_provider = 'local'")
             .fetch_one(pool)

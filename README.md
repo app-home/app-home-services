@@ -64,6 +64,21 @@ User authentication service supporting local password login, Google OAuth, sessi
 | POST | `/api/auth/logout` | Bearer | Invalidate a session |
 | POST | `/api/auth/refresh` | No | Rotate refresh token for a new access + refresh pair |
 
+### User Profiles
+
+| Method | Path | Auth | Description |
+| -------- | ------ | ------ | ------------- |
+| GET | `/api/profile` | Bearer | Get the authenticated user's profile |
+| PUT | `/api/profile` | Bearer | Update the authenticated user's profile |
+
+### Admin
+
+| Method | Path | Auth | Description |
+| -------- | ------ | ------ | ------------- |
+| GET | `/api/admin/users` | Bearer+Admin | List all users |
+| GET | `/api/admin/users/{id}` | Bearer+Admin | Get a user by ID |
+| PUT | `/api/admin/users/{id}/role` | Bearer+Admin | Update a user's role |
+
 ### System
 
 | Method | Path | Auth | Description |
@@ -156,40 +171,57 @@ Cross-origin requests are restricted to origins listed in `CORS_ALLOWED_ORIGINS`
 
 ## Architecture
 
-The project follows **Hexagonal Architecture (Ports & Adapters)**:
+The project is a modular monolith built with Hexagonal Architecture (Ports & Adapters)
+and Domain-Driven Design. Each bounded context lives in its own workspace crate:
 
 ```text
-                      ┌──────────┐
-                      │  Axum    │  (inbound adapters — HTTP handlers)
-                      │ Routes   │
-                      └────┬─────┘
-                           │
-                 ┌─────────▼─────────┐
-                 │   Use Cases       │  (application layer — orchestration)
-                 └────┬─────────┬────┘
-                      │         │
-             ┌────────▼──┐  ┌──▼────────┐
-             │ Ports     │  │ Ports     │  (application/ports — traits)
-             │ (traits)  │  │ (traits)  │
-             └────┬──────┘  └─────┬─────┘
-                  │               │
-        ┌─────────▼──────┐  ┌────▼──────────┐
-        │ PostgresRepos  │  │ JwtService    │  (outbound adapters)
-        │ RateLimiter    │  │ GoogleAuth    │
-        └────────────────┘  └───────────────┘
+                       ┌──────────┐
+                       │  Axum    │  (inbound adapters — HTTP handlers)
+                       │ Routes   │
+                       └────┬─────┘
+                            │
+                  ┌─────────▼─────────┐
+                  │   Use Cases       │  (application layer — orchestration)
+                  └────┬─────────┬────┘
+                       │         │
+              ┌────────▼──┐  ┌──▼────────┐
+              │ Ports     │  │ Ports     │  (application/ports — traits)
+              │ (traits)  │  │ (traits)  │
+              └────┬──────┘  └─────┬─────┘
+                   │               │
+         ┌─────────▼──────┐  ┌────▼──────────┐
+         │ PostgresRepos  │  │ JwtService    │  (outbound adapters)
+         │ RateLimiter    │  │ GoogleAuth    │
+         └────────────────┘  └───────────────┘
 ```
 
-### Key Modules
+### Project Structure
+
+| Crate | Purpose |
+| ----- | ------- |
+| `src/` | Composition root — server bootstrap, combined OpenAPI spec |
+| `crates/auth/` | Auth context — domain, use cases, inbound/outbound adapters |
+| `crates/profiles/` | User profiles context — domain, use cases, adapters |
+| `crates/admin/` | Admin user management context — domain, use cases, adapters |
+| `crates/infrastructure/` | Shared infrastructure — database pool, telemetry, rate limiter setup |
+| `crates/shared/` | Shared types — config settings, common utilities |
+
+### Key Modules (Auth context — `crates/auth/src/`)
 
 | Layer | Path | Description |
 | ------- | ------ | ------------- |
-| Domain | `src/domain/entities/` | `User`, `Session`, `UserAction` entities |
-| Domain | `src/domain/errors.rs` | `AuthError` enum with typed error variants |
-| Application | `src/application/ports/` | Traits: `UserRepository`, `SessionRepository`, `JwtService`, `RateLimiter`, `AuthProvider` |
-| Application | `src/application/use_cases/` | `login_with_password`, `login_with_google`, `logout`, `refresh_token`, `record_audit_entry` |
-| Adapters | `src/adapters/inbound/` | HTTP handlers + auth middleware |
-| Adapters | `src/adapters/outbound/` | `PostgresUserRepo`, `PostgresSessionRepo`, `JwtServiceImpl`, `MemoryRateLimiter`, `RedisRateLimiter`, `GoogleAuthProvider` |
-| Infrastructure | `src/infrastructure/` | Config, database pool, telemetry |
+| Domain | `domain/entities/` | `User`, `Session`, `UserAction` entities |
+| Domain | `domain/aggregate.rs` | `UserAggregate` with domain events & invariant validation |
+| Domain | `domain/errors.rs` | `AuthError` enum with typed error variants |
+| Application | `application/ports/` | Traits: `UserRepository`, `SessionRepository`, `JwtService`, `RateLimiter`, `AuthProvider` |
+| Application | `application/use_cases/` | `login_with_password`, `login_with_google`, `logout`, `refresh_token`, `record_audit_entry` |
+| Adapters | `adapters/inbound/` | HTTP handlers + auth middleware |
+| Adapters | `adapters/outbound/` | `PostgresUserRepo`, `PostgresSessionRepo`, `JwtServiceImpl`, `MemoryRateLimiter`, `RedisRateLimiter`, `GoogleAuthProvider` |
+| Config | `config/` | `AuthSettings` (auth-specific env vars) |
+
+For the other bounded contexts, see:
+- `crates/profiles/src/` — Profile entity, `ProfileRepository`, `get_profile` / `update_profile` use cases
+- `crates/admin/src/` — `AdminUser` entity, `Role` value object, `AdminRepository`, `list_users` / `get_user` / `update_user_role` use cases
 
 ## Migrations
 
@@ -200,6 +232,8 @@ The project follows **Hexagonal Architecture (Ports & Adapters)**:
 | `003_create_sessions_table.sql` | Sessions table for JWT refresh token management |
 | `004_extend_user_actions.sql` | Adds `session_id` and `event_type` to user_actions |
 | `005_add_auth_method_to_sessions.sql` | Adds `auth_method` to sessions (`password` / `google_oauth`) |
+| `006_create_user_profiles_table.sql` | User profiles table for the profiles context |
+| `007_add_role_to_users.sql` | Adds `role` column (`user` / `admin`) to users table |
 
 Migrations run automatically on startup.
 

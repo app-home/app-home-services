@@ -1,6 +1,6 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-use app_home_services::adapters::inbound::login_routes::resolve_client_ip;
+use auth::adapters::inbound::login_routes::resolve_client_ip;
 use axum::http::HeaderMap;
 
 fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
