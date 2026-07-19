@@ -13,5 +13,6 @@ use crate::adapters::inbound::responses::HealthResponse;
 pub async fn health_check() -> Json<HealthResponse> {
     Json(HealthResponse {
         status: "ok".into(),
+        version: env!("CARGO_PKG_VERSION").into(),
     })
 }

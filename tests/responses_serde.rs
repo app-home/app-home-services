@@ -63,9 +63,11 @@ fn status_response_round_trip() {
 fn health_response_round_trip() {
     let original = HealthResponse {
         status: "ok".into(),
+        version: "0.1.0".into(),
     };
     let json = serde_json::to_value(&original).unwrap();
     assert_eq!(json["status"], "ok");
+    assert_eq!(json["version"], "0.1.0");
 }
 
 #[test]
