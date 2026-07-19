@@ -175,24 +175,39 @@ The project is a modular monolith built with Hexagonal Architecture (Ports & Ada
 and Domain-Driven Design. Each bounded context lives in its own workspace crate:
 
 ```text
-                       ┌──────────┐
-                       │  Axum    │  (inbound adapters — HTTP handlers)
-                       │ Routes   │
-                       └────┬─────┘
-                            │
-                  ┌─────────▼─────────┐
-                  │   Use Cases       │  (application layer — orchestration)
-                  └────┬─────────┬────┘
-                       │         │
-              ┌────────▼──┐  ┌──▼────────┐
-              │ Ports     │  │ Ports     │  (application/ports — traits)
-              │ (traits)  │  │ (traits)  │
-              └────┬──────┘  └─────┬─────┘
-                   │               │
-         ┌─────────▼──────┐  ┌────▼──────────┐
-         │ PostgresRepos  │  │ JwtService    │  (outbound adapters)
-         │ RateLimiter    │  │ GoogleAuth    │
-         └────────────────┘  └───────────────┘
+ ┌─────────────────────────────────────────────────────────────────────────────┐
+ │                              src/ (composition root)                        │
+ │                        Axum router · combined OpenAPI spec                  │
+ └───────┬───────────────┬─────────────────┬──────────────────┬────────────────┘
+         │               │                 │                  │
+         ▼               ▼                 ▼                  ▼
+ ┌───────────────┐ ┌──────────────┐ ┌──────────────┐ ┌ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ─ ┐
+ │   auth/       │ │  profiles/   │ │   admin/     │ │       ???/            │
+ │               │ │              │ │              │ │                       │
+ │   Domain      │ │   Domain     │ │   Domain     │ │      Domain           │
+ │     │         │ │     │        │ │     │        │ │        │              │
+ │   UseCases    │ │   UseCases   │ │   UseCases   │ │      UseCases         │
+ │     │         │ │     │        │ │     │        │ │        │              │
+ │   Ports       │ │   Ports      │ │   Ports      │ │      Ports            │
+ │     │         │ │     │        │ │     │        │ │        │              │
+ │   Adapters    │ │   Adapters   │ │   Adapters   │ │      Adapters         │
+ │               │ │              │ │              │ │                       │
+ └───────┬───────┘ └──────┬───────┘ └──────┬───────┘ └─────────┬─────────────┘
+         │                │                │                   │
+         └────────────────┼────────────────┘  ─  ─ ─ ─ ─ ─ ─ ─ ┘
+                          │                    (crates futuros)
+                          │
+                          ▼
+ ┌─────────────────────────────────────────────────────────────────────────────┐
+ │                             crates/infrastructure/                          │
+ │                     DB pool · telemetry · rate limiter                      │
+ └────────────────────────────────┬────────────────────────────────────────────┘
+                                  │
+                                  ▼
+ ┌─────────────────────────────────────────────────────────────────────────────┐
+ │                                crates/shared/                               │
+ │                           Settings · common utilities                       │
+ └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Project Structure
@@ -319,3 +334,4 @@ An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limite
 - Session state transitions are one-way (active → inactive)
 - Sessions record the `auth_method` used to create them ("password" / "google_oauth"), so logout/refresh audit entries reflect the real method instead of assuming one
 - Redis connections support password auth (`redis://:password@host:port`); TLS is not crate-native today -- see `docs/redis-security.md` for the documented decision and when to revisit it
+
