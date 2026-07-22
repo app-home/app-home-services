@@ -78,6 +78,14 @@ Both handlers extract `AuthenticatedUser` (JWT) and resolve `ProfileRepository` 
 | `bio` | TEXT | nullable |
 | `updated_at` | TIMESTAMPTZ | |
 
+The `user_id` foreign key (`ON DELETE CASCADE`) is real cross-context coupling at the
+database level: it's what currently guarantees a profile can't outlive its user, and
+it's enforced by Postgres rather than application code. This crate's own repository
+code (`PostgresProfileRepo`) never queries `users` directly -- only this FK ties it
+to `auth`'s table. See [`docs/adr/0001-modular-monolith.md`](../adr/0001-modular-monolith.md)
+for what resolving this would take if `profiles` were ever extracted into its own
+service.
+
 Data model: [`specs/005-user-profiles/data-model.md`](../../specs/005-user-profiles/data-model.md)
 
 ## Integration
