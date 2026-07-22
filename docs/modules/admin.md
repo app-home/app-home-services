@@ -80,6 +80,16 @@ ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'
   CHECK (role IN ('user', 'admin'));
 ```
 
+**This is the strongest cross-context coupling in the codebase.** `admin` doesn't
+own a table of its own -- every method on `PostgresAdminRepo` (`list_users`,
+`get_user`, `is_admin`, `update_role`) runs SQL directly against `users`, a table
+created and conceptually owned by `auth` (migration 001). `admin` effectively owns
+one column (`role`) on someone else's table. See
+[`docs/adr/0001-modular-monolith.md`](../adr/0001-modular-monolith.md) for why this
+is acceptable at the current stage and exactly what would need to change (an `auth`-
+owned API for `admin` to call, instead of direct SQL) before `admin` could be
+extracted into its own service.
+
 Data model: [`specs/006-admin/data-model.md`](../../specs/006-admin/data-model.md)
 
 ## Integration
