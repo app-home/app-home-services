@@ -221,6 +221,17 @@ and Domain-Driven Design. Each bounded context lives in its own workspace crate:
 | `crates/infrastructure/` | Shared infrastructure — database pool, telemetry, rate limiter setup |
 | `crates/shared/` | Shared types — config settings, common utilities |
 
+### Why a modular monolith, and how to extract a context later
+
+Each bounded context is a separate workspace crate today, deployed as one binary,
+rather than a separate service — see [`docs/adr/0001-modular-monolith.md`](docs/adr/0001-modular-monolith.md)
+for the full reasoning. In short: at the current scale, one deploy is cheaper to
+operate than several, and the crate boundaries already give most of the isolation
+benefit of a service boundary without the network/versioning cost. That same
+document also gives a verified account of exactly what would need to change before
+a given context (e.g. `admin`) could be cleanly pulled out into its own service, and
+concrete signals for when that becomes worth doing.
+
 ### Key Modules (Auth context — `crates/auth/src/`)
 
 | Layer | Path | Description |
@@ -334,4 +345,3 @@ An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limite
 - Session state transitions are one-way (active → inactive)
 - Sessions record the `auth_method` used to create them ("password" / "google_oauth"), so logout/refresh audit entries reflect the real method instead of assuming one
 - Redis connections support password auth (`redis://:password@host:port`); TLS is not crate-native today -- see `docs/redis-security.md` for the documented decision and when to revisit it
-
