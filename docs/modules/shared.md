@@ -106,3 +106,10 @@ shared (leaf)
 ```
 
 No bounded context depends on another — `shared` is the shared kernel at the base.
+This clean graph, plus the `AuthenticatedUser` extractor and `EventBus` above (both
+of which let `profiles`/`admin` interact with cross-cutting or `auth`-originated
+concerns without depending on the `auth` crate directly), are what make it
+plausible to extract a context into its own service later without a rewrite. See
+[`docs/adr/0001-modular-monolith.md`](../adr/0001-modular-monolith.md) for the full
+reasoning, including the coupling that *isn't* this clean yet (documented in
+`docs/modules/admin.md` and `docs/modules/profiles.md`).
