@@ -2,15 +2,15 @@
 
 ## Purpose
 
-Admin user management bounded context. Provides admin-only endpoints for listing users, viewing user details, and updating user roles. Extends the `users` table with a `role` column (migration 007). Admin access is gated by JWT authentication + DB role check.
+Admin user management bounded context. Provides admin-only endpoints for listing users, viewing user details, and updating user roles. Owns its own `user_roles` table (migration 008). Admin access is gated by JWT authentication + role check.
 
 ## Dependencies
 
 | Crate | Role |
 |-------|------|
-| `shared` | `AuthenticatedUser` (JWT extractor), `ErrorResponse` |
+| `shared` | `AuthenticatedUser` (JWT extractor), `ErrorResponse`, `UserDirectory` (port for reading user identity, implemented by `auth`) |
 
-No dependency on `auth` — only on `shared`.
+No dependency on `auth` — only on `shared`. `admin` reads user identity through `shared::user_directory::UserDirectory`, injected as `Arc<dyn UserDirectory>` at the composition root (`main.rs`), which wires in `auth`'s concrete implementation without `admin` depending on the `auth` crate itself.
 
 ## Domain Layer
 
@@ -36,7 +36,7 @@ No dependency on `auth` — only on `shared`.
 |--------|-------------|
 | `list_users()` | Return all users |
 | `get_user(user_id)` | Return single user by ID |
-| `is_admin(user_id)` | Check admin permission (DB role query) |
+| `is_admin(user_id)` | Check admin permission (role lookup) |
 | `update_role(user_id, role)` | Update user role, return updated user |
 
 ### Use Cases
@@ -51,7 +51,7 @@ No dependency on `auth` — only on `shared`.
 
 ### Inbound (HTTP Handlers)
 
-All handlers require **JWT Bearer** + **admin role** (`is_admin()` DB check → 403 `AdminGuard` if false):
+All handlers require **JWT Bearer** + **admin role** (`is_admin()` check → 403 `AdminGuard` if false):
 
 | Method | Path | Body | Response 200 | Errors |
 |--------|------|------|--------------|--------|
@@ -69,26 +69,30 @@ All handlers require **JWT Bearer** + **admin role** (`is_admin()` DB check → 
 
 | Adapter | Implements | Description |
 |---------|-----------|-------------|
-| `PostgresAdminRepo` | `AdminRepository` | SQLx queries against `users` table with `role` column |
+| `PostgresAdminRepo` | `AdminRepository` | Queries its own `user_roles` table for role data; delegates identity fields to an injected `Arc<dyn UserDirectory>` |
 
 ## Database
 
-Extends `users` table via migration 007:
+**Table**: `user_roles` (owned by `admin`, migration 008)
 
 ```sql
-ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'
-  CHECK (role IN ('user', 'admin'));
+CREATE TABLE user_roles (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    role VARCHAR(20) NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 ```
 
-**This is the strongest cross-context coupling in the codebase.** `admin` doesn't
-own a table of its own -- every method on `PostgresAdminRepo` (`list_users`,
-`get_user`, `is_admin`, `update_role`) runs SQL directly against `users`, a table
-created and conceptually owned by `auth` (migration 001). `admin` effectively owns
-one column (`role`) on someone else's table. See
-[`docs/adr/0001-modular-monolith.md`](../adr/0001-modular-monolith.md) for why this
-is acceptable at the current stage and exactly what would need to change (an `auth`-
-owned API for `admin` to call, instead of direct SQL) before `admin` could be
-extracted into its own service.
+**Resolved coupling.** This used to be the strongest cross-context coupling in the
+codebase: every `PostgresAdminRepo` method ran SQL directly against `users`, a table
+owned by `auth` (migration 001), with `admin` effectively owning one borrowed column
+(`role`, migration 007) on someone else's table. As of migration 008, `admin` owns
+`user_roles` outright and never queries `users` -- identity fields come through
+`UserDirectory` instead (see Dependencies above). The FK into `users(id)` remains for
+referential integrity, since both contexts still share one database today; see
+[`docs/adr/0001-modular-monolith.md`](../adr/0001-modular-monolith.md) for what
+extracting `admin` into its own service would still require beyond this (splitting
+the schema, replacing `UserDirectory`'s in-process call with a network one).
 
 Data model: [`specs/006-admin/data-model.md`](../../specs/006-admin/data-model.md)
 
@@ -96,7 +100,8 @@ Data model: [`specs/006-admin/data-model.md`](../../specs/006-admin/data-model.m
 
 In `main.rs`:
 
-1. `PostgresAdminRepo` created from pool → wrapped in `Arc`
-2. Injected as `Extension(admin_repo)` at router level
-3. Routes: `GET /api/admin/users`, `GET /api/admin/users/{id}`, `PUT /api/admin/users/{id}/role`
-4. `AdminGuard` (implements `IntoResponse`) returns 403 when `is_admin()` fails — no dependency on `auth::AppState`
+1. `PostgresUserDirectory` (from `auth`) created from pool → wrapped in `Arc<dyn UserDirectory>`
+2. `PostgresAdminRepo` created from pool + that `UserDirectory` handle → wrapped in `Arc`
+3. Injected as `Extension(admin_repo)` at router level
+4. Routes: `GET /api/admin/users`, `GET /api/admin/users/{id}`, `PUT /api/admin/users/{id}/role`
+5. `AdminGuard` (implements `IntoResponse`) returns 403 when `is_admin()` fails — no dependency on `auth::AppState`
