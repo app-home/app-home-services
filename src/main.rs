@@ -29,11 +29,13 @@ use auth::adapters::inbound::oauth_callback::login_google_handler;
 use auth::adapters::inbound::refresh_routes::refresh_token_handler;
 use auth::adapters::jwt_service::JwtServiceImpl;
 use auth::adapters::postgres_session_repo::PostgresSessionRepo;
+use auth::adapters::postgres_user_directory::PostgresUserDirectory;
 use auth::adapters::postgres_user_repo::PostgresUserRepo;
 use auth::config::auth_settings::AuthSettings;
 use profiles::adapters::inbound::profile_routes::{get_profile_handler, update_profile_handler};
 use profiles::adapters::outbound::postgres_profile_repo::PostgresProfileRepo;
 use shared::event_bus::EventBus;
+use shared::user_directory::UserDirectory;
 use utoipa_swagger_ui::SwaggerUi;
 
 #[tokio::main]
@@ -78,7 +80,15 @@ async fn main() {
     let user_repo = PostgresUserRepo::new(pool.clone());
     let session_repo = PostgresSessionRepo::new(pool.clone());
     let profile_repo = Arc::new(PostgresProfileRepo::new(pool.clone()));
-    let admin_repo = Arc::new(PostgresAdminRepo::new(pool.clone()));
+
+    // `admin` depends only on the `UserDirectory` port (defined in `shared`) for user
+    // identity, not on the `auth` crate or its `users` table directly -- this is the
+    // composition root wiring the concrete `auth`-owned implementation in. See
+    // docs/adr/0001-modular-monolith.md for why this replaced admin's previous direct
+    // SQL access to `users`.
+    let user_directory: Arc<dyn UserDirectory> =
+        Arc::new(PostgresUserDirectory::new(pool.clone()));
+    let admin_repo = Arc::new(PostgresAdminRepo::new(pool.clone(), user_directory));
 
     let (event_bus, mut event_rx) = EventBus::new(256);
     let audit_handler = AuditEventHandler::new(pool.clone());
