@@ -7,6 +7,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 - Rust 2024 edition (nightly)
 - PostgreSQL 14+
 - Redis (optional, only required for multi-instance deployments -- see Rate Limiting below)
+- Podman or Docker (optional, only for building/running the container image -- see Container Image below)
 
 ## Setup
 
@@ -38,13 +39,13 @@ User authentication service supporting local password login, Google OAuth, sessi
 | Variable | Required | Default | Description |
 | ---------- | ---------- | --------- | ------------- |
 | `DATABASE_URL` | Yes | — | PostgreSQL connection string |
-| `SERVER_HOST` | No | `0.0.0.0` | HTTP server bind host |
+| `SERVER_HOST` | No | `127.0.0.1` | HTTP server bind host. **Set to `0.0.0.0` when running in a container** (see Container Image below) or anywhere else the process needs to accept connections from outside its own host -- `127.0.0.1` only accepts local connections. |
 | `SERVER_PORT` | No | `3000` | HTTP server bind port |
 | `DEFAULT_USER_USERNAME` | No | `admin` | Default local user username |
 | `DEFAULT_USER_PASSWORD` | Yes | — | Default local user password |
 | `DEFAULT_USER_EMAIL` | No | `admin@example.com` | Default local user email |
 | `GOOGLE_CLIENT_ID` | No | — | Google OAuth client ID (empty = Google login disabled) |
-| `JWT_SECRET` | Yes | — | HMAC secret for signing JWT tokens (e.g. `openssl rand -hex 64`) |
+| `JWT_SECRET` | Yes | — | HMAC secret for signing JWT tokens. Must be at least 32 bytes **and** have at least 8 unique characters (rejects both short and low-entropy secrets, e.g. `aaaa...aaaa`) -- generate one with `openssl rand -hex 64` |
 | `ACCESS_TOKEN_EXPIRY_MINUTES` | No | `15` | Access token lifetime in minutes |
 | `REFRESH_TOKEN_EXPIRY_DAYS` | No | `7` | Refresh token lifetime in days |
 | `RATE_LIMIT_MAX_ATTEMPTS` | No | `10` | Max failed login attempts per IP within the time window |
@@ -219,7 +220,7 @@ and Domain-Driven Design. Each bounded context lives in its own workspace crate:
 | `crates/profiles/` | User profiles context — domain, use cases, adapters |
 | `crates/admin/` | Admin user management context — domain, use cases, adapters |
 | `crates/infrastructure/` | Shared infrastructure — database pool, telemetry, rate limiter setup |
-| `crates/shared/` | Shared types — config settings, common utilities |
+| `crates/shared/` | Shared types — config settings, common utilities, cross-context ports (`UserDirectory`, `RateLimiter`), event bus |
 
 ### Why a modular monolith, and how to extract a context later
 
@@ -229,8 +230,9 @@ for the full reasoning. In short: at the current scale, one deploy is cheaper to
 operate than several, and the crate boundaries already give most of the isolation
 benefit of a service boundary without the network/versioning cost. That same
 document also gives a verified account of exactly what would need to change before
-a given context (e.g. `admin`) could be cleanly pulled out into its own service, and
-concrete signals for when that becomes worth doing.
+a given context could be cleanly pulled out into its own service (including how
+`admin`'s former direct coupling to `auth`'s `users` table was already resolved via
+the `UserDirectory` port), and concrete signals for when that becomes worth doing.
 
 ### Key Modules (Auth context — `crates/auth/src/`)
 
@@ -242,12 +244,12 @@ concrete signals for when that becomes worth doing.
 | Application | `application/ports/` | Traits: `UserRepository`, `SessionRepository`, `JwtService`, `RateLimiter`, `AuthProvider` |
 | Application | `application/use_cases/` | `login_with_password`, `login_with_google`, `logout`, `refresh_token`, `record_audit_entry` |
 | Adapters | `adapters/inbound/` | HTTP handlers + auth middleware |
-| Adapters | `adapters/outbound/` | `PostgresUserRepo`, `PostgresSessionRepo`, `JwtServiceImpl`, `MemoryRateLimiter`, `RedisRateLimiter`, `GoogleAuthProvider` |
+| Adapters | `adapters/outbound/` | `PostgresUserRepo`, `PostgresUserDirectory`, `PostgresSessionRepo`, `JwtServiceImpl`, `MemoryRateLimiter`, `RedisRateLimiter`, `GoogleAuthProvider` |
 | Config | `config/` | `AuthSettings` (auth-specific env vars) |
 
 For the other bounded contexts, see:
 - `crates/profiles/src/` — Profile entity, `ProfileRepository`, `get_profile` / `update_profile` use cases
-- `crates/admin/src/` — `AdminUser` entity, `Role` value object, `AdminRepository`, `list_users` / `get_user` / `update_user_role` use cases
+- `crates/admin/src/` — `AdminUser` entity, `Role` value object, `AdminRepository` (backed by its own `user_roles` table plus `shared::user_directory::UserDirectory` for identity fields), `list_users` / `get_user` / `update_user_role` use cases
 
 ## Migrations
 
@@ -259,7 +261,8 @@ For the other bounded contexts, see:
 | `004_extend_user_actions.sql` | Adds `session_id` and `event_type` to user_actions |
 | `005_add_auth_method_to_sessions.sql` | Adds `auth_method` to sessions (`password` / `google_oauth`) |
 | `006_create_user_profiles_table.sql` | User profiles table for the profiles context |
-| `007_add_role_to_users.sql` | Adds `role` column (`user` / `admin`) to users table |
+| `007_add_role_to_users.sql` | Adds `role` column (`user` / `admin`) to users table (superseded by 008) |
+| `008_create_admin_user_roles.sql` | Moves `role` into its own `user_roles` table owned by the admin context; drops `users.role` |
 
 Migrations run automatically on startup.
 
@@ -300,6 +303,36 @@ Run it from the project root:
 
 See `Get-Help .\scripts\test-with-podman.ps1` for full details.
 
+## Container Image
+
+A `Containerfile` (Docker/Podman-compatible multi-stage build) is included, and every push to `main` automatically builds and publishes an image to GitHub Container Registry via `.github/workflows/docker-publish.yml`:
+
+```
+ghcr.io/app-home/app-home-services:latest
+ghcr.io/app-home/app-home-services:<commit-sha>
+```
+
+A separate scheduled workflow (`.github/workflows/cleanup-container-images.yml`) prunes old untagged image versions from the registry.
+
+**⚠️ `SERVER_HOST` must be set explicitly when running the container.** The service defaults to binding `127.0.0.1` (see Environment Variables above), which only accepts connections from inside the container's own network namespace -- with the default, the container starts successfully but is **unreachable** through any published port. Always pass `SERVER_HOST=0.0.0.0` (the container's own network isolation is what provides the safety `127.0.0.1` would otherwise be protecting on bare metal):
+
+```bash
+docker run -p 3000:3000 \
+  -e DATABASE_URL=postgres://user:pass@host.docker.internal/app_home \
+  -e DEFAULT_USER_PASSWORD=<your-secure-password> \
+  -e JWT_SECRET=<your-jwt-secret> \
+  -e SERVER_HOST=0.0.0.0 \
+  ghcr.io/app-home/app-home-services:latest
+```
+
+Build locally with either Docker or Podman:
+
+```bash
+docker build -t app-home-services -f Containerfile .
+# or
+podman build -t app-home-services -f Containerfile .
+```
+
 ## Metrics & Alerting
 
 The service exposes a Prometheus-compatible metrics endpoint:
@@ -336,12 +369,15 @@ An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limite
 - Passwords hashed with bcrypt (never stored in plaintext)
 - Refresh tokens hashed with bcrypt before storage
 - JWT tokens signed with HMAC-SHA256
+- `JWT_SECRET` must be at least 32 bytes long and have at least 8 unique characters -- the service refuses to start otherwise, and additionally warns (without refusing to start) if character diversity is still low relative to the secret's length
 - No plain-text passwords in logs (structured field logging)
 - Rate limiting per IP on both login and refresh (independent counters) to prevent brute-force attacks, backed by Redis for multi-instance deployments (see Rate Limiting above)
 - `X-Forwarded-For`/`X-Real-IP` only trusted from configured reverse proxies (`TRUSTED_PROXY_IPS`), preventing rate-limit bypass via header spoofing
 - Password login always performs exactly one bcrypt verification (real or a fixed-cost dummy), closing the timing side-channel that would otherwise reveal whether a username exists; a uniform 50 ms delay is layered on top as additional defense-in-depth
 - CORS denied by default (same-origin only)
+- HTTP server binds to `127.0.0.1` by default (loopback only) -- see the `SERVER_HOST` note under Environment Variables and Container Image above for when and how to change this
 - Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
 - Session state transitions are one-way (active → inactive)
 - Sessions record the `auth_method` used to create them ("password" / "google_oauth"), so logout/refresh audit entries reflect the real method instead of assuming one
 - Redis connections support password auth (`redis://:password@host:port`); TLS is not crate-native today -- see `docs/redis-security.md` for the documented decision and when to revisit it
+- `admin` never queries `auth`'s `users` table directly -- identity fields are read through the `UserDirectory` port, and role data lives in admin's own `user_roles` table (see `docs/modules/admin.md`)
