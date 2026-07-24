@@ -1,19 +1,45 @@
 <!--
   Sync Impact Report
 
-  Version change: 1.0.0 → 1.1.0
+  Version change: 1.1.0 → 1.2.0
   Modified principles:
-    - "V. PostgreSQL Persistence Standards · VI. Observability and Reliability" →
-      UUID primary key rule added under PostgreSQL Persistence Standards
-  Added sections: None
+    - "I. Hexagonal Architecture (NON-NEGOTIABLE)" → clarified that the
+      dependency-direction rule (Adapters → Application → Domain) applies inside
+      each bounded-context crate, not to a single src/ tree, since the project is
+      no longer a single crate
+  Added principles:
+    - "VII. Modular Monolith Boundaries (NON-NEGOTIABLE)" → codifies the
+      one-crate-per-bounded-context structure, the no-direct-cross-context-crate-
+      dependency rule, cross-context ports as the only sanctioned communication
+      path, and per-context data ownership. Grounded in
+      docs/adr/0001-modular-monolith.md.
+  Modified sections:
+    - "Project Structure Standards" → replaced the single-crate src/ tree with the
+      actual Cargo workspace layout (crates/<context>/ + src/ composition root),
+      matching the modular monolith migration completed in PRs #71-#75 and the
+      admin/users decoupling completed 2026-07-23.
   Removed sections: None
   Templates requiring updates:
-    - .specify/templates/plan-template.md: ✅ No changes needed (generic Constitution Check)
+    - .specify/templates/plan-template.md: ✅ No changes needed (generic
+      Constitution Check, not structure-specific)
     - .specify/templates/spec-template.md: ✅ No changes needed
     - .specify/templates/tasks-template.md: ✅ No changes needed
-  Command files (.opencode/commands/): ✅ No outdated references
-  Runtime guidance (README.md, AGENTS.md): ✅ No constitution references to update
-  Follow-up TODOs: None
+  Command files (.opencode/commands/): ⚠ Not reviewed in this amendment -- if any
+    command hardcodes the old single-crate src/ paths (src/domain/, src/adapters/,
+    etc.) rather than crates/<context>/src/..., it should be updated to match.
+  Runtime guidance (README.md, AGENTS.md):
+    - README.md: ✅ Already describes the workspace/crates structure (see
+      Architecture section) -- no changes needed from this amendment.
+    - AGENTS.md: ⚠ Contains a stale fact unrelated to this amendment (says admin
+      "Extends `users` table with `role` column (migration 007)"; as of
+      2026-07-23 this is superseded by migration 008 / the UserDirectory port --
+      see docs/adr/0001-modular-monolith.md). AGENTS.md is auto-updated by
+      opencode tooling, not hand-edited here, so this is flagged rather than
+      fixed in this change.
+  Follow-up TODOs:
+    - Review .opencode/commands/ for hardcoded old-structure paths.
+    - AGENTS.md's migration-007 reference should be refreshed by whatever process
+      normally updates that file.
 -->
 
 # App Home Services Constitution
@@ -22,21 +48,27 @@
 
 ### I. Hexagonal Architecture (NON-NEGOTIABLE)
 
-The system must follow Hexagonal Architecture (Ports and Adapters).
+Every bounded-context crate must follow Hexagonal Architecture (Ports and Adapters) internally.
 
-The dependency direction must always point inward:
+The dependency direction must always point inward, within each crate:
 
 Adapters → Application → Domain
 
-The Domain layer is the core of the system and must not depend on:
+The Domain layer is the core of each bounded context and must not depend on:
 - Database implementations
 - HTTP frameworks
 - External services
 - Infrastructure concerns
+- Another bounded context's crate (see Principle VII)
 
 Business rules must live in the Domain and Application layers.
 
 Infrastructure details must be replaceable through defined ports/interfaces.
+
+The composition root (`src/`) is exempt from this rule in one specific sense: it is
+allowed to depend on every bounded-context crate, since its entire job is to wire
+them together. It must not, however, contain Domain or Application logic of its
+own -- see Principle VII and Project Structure Standards below.
 
 ---
 
@@ -122,6 +154,54 @@ Failures must be handled explicitly and must not silently disappear.
 
 ---
 
+### VII. Modular Monolith Boundaries (NON-NEGOTIABLE)
+
+The system is organized as a modular monolith: one deployable binary, composed of
+independent bounded-context crates in a single Cargo workspace. See
+`docs/adr/0001-modular-monolith.md` for the full rationale, including why this is
+preferred over separate services today and what extracting a context into its own
+service later would require.
+
+This principle exists to keep that extraction realistic. It requires:
+
+- **One crate per bounded context.** Each bounded context (e.g. `auth`, `profiles`,
+  `admin`) lives in its own crate under `crates/`, with its own `Cargo.toml`,
+  following Hexagonal Architecture internally (Principle I).
+- **No bounded-context crate may depend on another bounded-context crate.** A
+  context's `Cargo.toml` may depend on `shared` and `infrastructure`, and nothing
+  else in the workspace. This is enforced by the compiler once respected, and must
+  be verified (not just assumed) whenever a new cross-context need arises -- check
+  the actual `[dependencies]` block, not just the intent.
+- **Cross-context communication happens only through ports defined in `shared`.**
+  When one context needs something from another (identity lookups, domain events,
+  etc.), the contract is a trait defined in `crates/shared/`, implemented by the
+  owning context, and injected at the composition root (`src/main.rs`) as a trait
+  object (e.g. `Arc<dyn Trait>`). A context must never call into another context's
+  concrete types or query another context's database tables directly. (Example:
+  `admin` reads user identity through `shared::user_directory::UserDirectory`,
+  implemented by `auth`, rather than depending on the `auth` crate or querying
+  `auth`'s `users` table.)
+- **Each bounded context owns its own data.** A context's tables belong to that
+  context. A foreign key into another context's table for referential integrity is
+  acceptable (both contexts share one database today), but a context must not read
+  or write columns that another context owns. If two contexts appear to need the
+  same piece of data, decide which one owns it and expose it to the other through a
+  port, rather than both querying the same table directly.
+- **The composition root wires, it does not implement.** `src/main.rs` (and
+  `src/lib.rs`) may construct concrete adapters and inject them into other
+  contexts' ports, and may combine per-context OpenAPI specs (`src/api_doc.rs`),
+  but must not contain Domain or Application logic belonging to any bounded
+  context.
+
+Any change that would violate one of these rules (a new `path = "../other-context"`
+dependency between two bounded-context crates, a raw SQL query against a table
+owned by a different context, business logic added directly to `src/`) requires
+either restructuring the change to go through a port, or an explicit amendment to
+this constitution documenting why the exception is justified -- per Governance
+below.
+
+---
+
 ## Technology Constraints
 
 The project technology stack is:
@@ -151,33 +231,56 @@ Additional dependencies must be justified according to project needs.
 
 ## Project Structure Standards
 
-The project should follow this organization:
+The project is a Cargo workspace: one crate per bounded context, a shared kernel, a
+cross-cutting infrastructure crate, and a thin composition-root binary. See
+Principle VII for the rules this structure exists to enforce, and
+`docs/modules/*.md` for what each crate currently owns.
 
 ```
-src/
-├── domain/
-│   ├── entities/
-│   ├── value_objects/
-│   └── errors.rs
+Cargo.toml                  # workspace manifest
+src/                        # composition root (binary crate)
+├── main.rs                 # wires every context together, starts the server
+├── lib.rs                  # thin re-export layer
+├── health.rs
+└── api_doc.rs               # combined OpenAPI spec across all bounded contexts
+
+crates/
+├── shared/                 # shared kernel -- leaf dependency, no workspace deps
+│   └── src/
+│       ├── domain/         # DomainError, cross-context value objects
+│       ├── ports.rs        # cross-context ports (e.g. RateLimiter)
+│       ├── user_directory.rs  # cross-context ports with their own DTOs
+│       ├── event_bus.rs    # async pub/sub for cross-context domain events
+│       ├── auth.rs         # AuthenticatedUser JWT extractor
+│       ├── api.rs          # shared API types (ErrorResponse, etc.)
+│       └── config.rs       # infra-level Settings
 │
-├── application/
-│   ├── use_cases/
-│   ├── services/
-│   └── ports/
+├── infrastructure/         # cross-cutting, depends only on shared
+│   └── src/                # db pool, telemetry (logging/metrics), rate limiter setup
 │
-├── adapters/
-│   ├── inbound/
-│   └── outbound/
+├── <bounded-context>/      # one per context, e.g. auth/, profiles/, admin/
+│   └── src/
+│       ├── domain/
+│       │   ├── entities/
+│       │   ├── value_objects/
+│       │   └── errors.rs
+│       ├── application/
+│       │   ├── use_cases/
+│       │   ├── ports/
+│       │   └── (services/, where useful)
+│       ├── adapters/
+│       │   ├── inbound/
+│       │   └── outbound/
+│       ├── config/          # context-specific settings, where needed
+│       └── lib.rs
 │
-├── infrastructure/
-│   ├── database/
-│   ├── config/
-│   └── telemetry/
-│
-└── main.rs
+└── ...                      # future bounded contexts follow the same shape
 ```
 
-The folder structure may evolve, but architectural boundaries must remain clear.
+Each bounded-context crate's internal folder structure may evolve, but the
+Adapters → Application → Domain boundary within it (Principle I) and the
+no-cross-context-crate-dependency rule (Principle VII) must remain clear and
+enforced.
 
 ### Development Workflow
 
@@ -197,9 +300,10 @@ Feature specifications must define:
 - Constraints.
 
 Implementation plans must define:
-- Architectural changes.
+- Architectural changes, including which bounded-context crate(s) are affected and
+  whether any new cross-context port is needed (Principle VII).
 - Components affected.
-- Database changes.
+- Database changes, including which bounded context owns any new table or column.
 - Testing strategy.
 
 ---
@@ -218,11 +322,11 @@ Changes to this constitution require:
 The constitution has priority over individual implementation preferences.
 
 All code reviews must verify compliance with:
-- Architecture rules.
+- Architecture rules, including bounded-context boundaries (Principle VII).
 - Testing requirements.
 - Security considerations.
 - Quality standards.
 
 Complexity must be justified. Prefer simple solutions that satisfy current requirements.
 
-**Version**: 1.1.0 | **Ratified**: 2026-07-01 | **Last Amended**: 2026-07-01
+**Version**: 1.2.0 | **Ratified**: 2026-07-01 | **Last Amended**: 2026-07-23
