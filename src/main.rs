@@ -53,7 +53,7 @@ async fn main() {
     let settings = Settings::from_env().expect("Failed to load settings");
     let auth_settings = AuthSettings::from_env().expect("Failed to load auth settings");
 
-    let pool = app_home_services::infrastructure::database::create_pool(&settings.database_url)
+    let pool = app_home_services::infrastructure::database::create_pool(&settings)
         .await
         .expect("Failed to create database pool");
 
@@ -135,6 +135,8 @@ async fn main() {
 
     let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
+    let health_check_pool = pool.clone();
+
     let state = auth::AppState::new(
         user_repo,
         session_repo,
@@ -186,6 +188,10 @@ async fn main() {
         .layer(Extension(profile_repo))
         .layer(Extension(admin_repo))
         .layer(Extension(decoding_key))
+        // /api/health runs a real `SELECT 1` against the pool (see src/health.rs),
+        // so it needs its own handle to it -- this clone is cheap (PgPool wraps an
+        // Arc internally), not a second pool.
+        .layer(Extension(health_check_pool))
         // Not gated behind auth: Prometheus scrape endpoints are conventionally
         // reached only from inside a private network / the cluster's monitoring
         // namespace, never exposed publicly. If this service is ever reachable from
