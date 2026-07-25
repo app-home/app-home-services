@@ -39,6 +39,11 @@ User authentication service supporting local password login, Google OAuth, sessi
 | Variable | Required | Default | Description |
 | ---------- | ---------- | --------- | ------------- |
 | `DATABASE_URL` | Yes | — | PostgreSQL connection string |
+| `DB_MAX_CONNECTIONS` | No | `10` | Max connections this instance's pool will open. With N instances against one Postgres, they together open up to `N * DB_MAX_CONNECTIONS` -- keep that under Postgres's own `max_connections`. See Database Connection Pool below. |
+| `DB_MIN_CONNECTIONS` | No | `0` | Idle connections the pool tries to keep pre-warmed. `0` = open lazily on demand. |
+| `DB_ACQUIRE_TIMEOUT_SECONDS` | No | `30` | How long a request waits for a pool connection before failing with a clear timeout instead of hanging. |
+| `DB_IDLE_TIMEOUT_SECONDS` | No | `600` | How long a connection may sit idle before being closed. `0` disables idle recycling. |
+| `DB_MAX_LIFETIME_SECONDS` | No | `1800` | Max lifetime of a connection before forced recycling, guarding against silently-stale connections behind a proxy/load balancer. `0` disables this. |
 | `SERVER_HOST` | No | `127.0.0.1` | HTTP server bind host. **Set to `0.0.0.0` when running in a container** (see Container Image below) or anywhere else the process needs to accept connections from outside its own host -- `127.0.0.1` only accepts local connections. |
 | `SERVER_PORT` | No | `3000` | HTTP server bind port |
 | `DEFAULT_USER_USERNAME` | No | `admin` | Default local user username |
@@ -84,7 +89,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 
 | Method | Path | Auth | Description |
 | -------- | ------ | ------ | ------------- |
-| GET | `/api/health` | No | Health check |
+| GET | `/api/health` | No | Health check -- runs `SELECT 1` against the database pool (2s timeout); `200` if it succeeds, `503` if the database is unreachable or the check times out |
 | GET | `/metrics` | No | Prometheus metrics (see Metrics & Alerting below) |
 
 ### API Documentation (OpenAPI / Swagger)
@@ -266,6 +271,16 @@ For the other bounded contexts, see:
 
 Migrations run automatically on startup.
 
+## Database Connection Pool
+
+A single `PgPool` is created once at startup (`infrastructure::database::create_pool`) and shared -- via cheap clones, since `PgPool` wraps an internal `Arc` -- across every bounded context's repositories. It's tuned via the `DB_*` environment variables documented above (`DB_MAX_CONNECTIONS`, `DB_MIN_CONNECTIONS`, `DB_ACQUIRE_TIMEOUT_SECONDS`, `DB_IDLE_TIMEOUT_SECONDS`, `DB_MAX_LIFETIME_SECONDS`), all optional with sensible defaults if unset.
+
+**Sizing for more than one instance:** each instance opens its own pool, so N instances against one Postgres can open up to `N * DB_MAX_CONNECTIONS` connections in total. Make sure that stays comfortably under Postgres's own `max_connections` (commonly `100` by default) -- e.g. 5 instances at the default `DB_MAX_CONNECTIONS=10` is 50 connections, leaving room for `psql`, migrations, and anything else touching the same database.
+
+**`DB_ACQUIRE_TIMEOUT_SECONDS`** bounds how long a request waits for a pool connection when the pool is fully checked out, turning exhaustion into a fast, explicit error rather than a hung request. **`DB_IDLE_TIMEOUT_SECONDS`** and **`DB_MAX_LIFETIME_SECONDS`** recycle connections proactively -- useful if there's a proxy, load balancer, or managed Postgres provider between the app and the database that can silently drop long-lived idle connections.
+
+`/api/health` (see API Endpoints above) exercises this same pool with a real `SELECT 1` query, so it reflects actual database reachability rather than just "the process is running."
+
 ## Testing
 
 ```bash
@@ -280,7 +295,7 @@ REDIS_URL=redis://127.0.0.1:6379 cargo test --test integration -- --ignored redi
 ```
 
 - **Unit tests**: Session entity, JWT service, rate limiter (in-memory), trusted-proxy IP resolution, user action audit, password hashing
-- **Integration tests** (ignored by default): Login, logout, refresh, refresh rate limiting, CORS, rate limiting, startup hardening, Redis-backed rate limiting, Redis auth enforcement, live Redis connection failure
+- **Integration tests** (ignored by default): Login, logout, refresh, refresh rate limiting, CORS, rate limiting, startup hardening, Redis-backed rate limiting, Redis auth enforcement, live Redis connection failure, DB-backed health check
 
 ### Podman test environment
 
@@ -377,6 +392,7 @@ An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limite
 - CORS denied by default (same-origin only)
 - HTTP server binds to `127.0.0.1` by default (loopback only) -- see the `SERVER_HOST` note under Environment Variables and Container Image above for when and how to change this
 - Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
+- `/api/health` actively checks database connectivity (`SELECT 1` with a 2s timeout, `503` on failure) rather than always reporting healthy -- see Database Connection Pool above
 - Session state transitions are one-way (active → inactive)
 - Sessions record the `auth_method` used to create them ("password" / "google_oauth"), so logout/refresh audit entries reflect the real method instead of assuming one
 - Redis connections support password auth (`redis://:password@host:port`); TLS is not crate-native today -- see `docs/redis-security.md` for the documented decision and when to revisit it
