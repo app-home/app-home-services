@@ -15,10 +15,10 @@ Cross-cutting infrastructure services consumed by all bounded contexts. Provides
 ### `database`
 
 ```rust
-pub async fn create_pool(database_url: &str) -> Result<PgPool, sqlx::Error>
+pub async fn create_pool(settings: &Settings) -> Result<PgPool, sqlx::Error>
 ```
 
-PostgreSQL connection pool with 10 max connections. Called once at startup in `main.rs`.
+PostgreSQL connection pool, tuned from `Settings`' `db_*` fields (all configurable via env vars, all optional with defaults -- see Configuration below): `db_max_connections` (default 10), `db_min_connections` (default 0), `db_acquire_timeout_seconds` (default 30), `db_idle_timeout_seconds` (default 600, `0` = disabled), `db_max_lifetime_seconds` (default 1800, `0` = disabled). Called once at startup in `main.rs`; the resulting `PgPool` is cloned (cheap -- it wraps an internal `Arc`) into every bounded context's repositories, and separately into the router as an `Extension` for `/api/health`'s connectivity check.
 
 ### `config`
 
@@ -66,6 +66,11 @@ pub async fn build_rate_limiters(settings: &Settings)
 | Env Var | Default | Description |
 |---------|---------|-------------|
 | `DATABASE_URL` | **required** | PostgreSQL connection string |
+| `DB_MAX_CONNECTIONS` | `10` | Max pool connections per instance. `N * DB_MAX_CONNECTIONS` across N instances must stay under Postgres's own `max_connections`. |
+| `DB_MIN_CONNECTIONS` | `0` | Idle connections the pool tries to keep pre-warmed |
+| `DB_ACQUIRE_TIMEOUT_SECONDS` | `30` | Max wait for a pool connection before failing fast |
+| `DB_IDLE_TIMEOUT_SECONDS` | `600` | Idle connection recycling; `0` disables it |
+| `DB_MAX_LIFETIME_SECONDS` | `1800` | Forced connection recycling regardless of activity; `0` disables it |
 | `SERVER_HOST` | `127.0.0.1` | Bind address |
 | `SERVER_PORT` | `3000` | Bind port |
 | `RATE_LIMIT_MAX_ATTEMPTS` | `10` | Max attempts per window |
@@ -85,8 +90,8 @@ app_home_services::infrastructure::telemetry::logging::init_logging();
 // Metrics
 let metrics_handle = infrastructure::telemetry::metrics::install_prometheus_recorder();
 
-// Database pool
-let pool = infrastructure::database::create_pool(&settings.database_url).await?;
+// Database pool (tuned from settings' db_* fields)
+let pool = infrastructure::database::create_pool(&settings).await?;
 
 // Rate limiters
 let (rate_limiter, refresh_rate_limiter, counters) =
@@ -94,4 +99,7 @@ let (rate_limiter, refresh_rate_limiter, counters) =
 
 // /metrics route (Prometheus scrape endpoint)
 app.route("/metrics", get(move || std::future::ready(metrics_handle.render())))
+
+// /api/health needs its own handle to the pool to run its connectivity check
+app.layer(Extension(pool.clone()))
 ```

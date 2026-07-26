@@ -1,5 +1,6 @@
 mod cors_test;
 mod database_test;
+mod health_test;
 mod login_google_test;
 mod login_password_test;
 mod logout_test;

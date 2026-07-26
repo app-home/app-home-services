@@ -11,6 +11,30 @@ pub struct Settings {
     pub cors_allowed_origins: String,
     pub trusted_proxy_ips: Vec<IpAddr>,
     pub redis_url: Option<String>,
+    /// Maximum number of connections the database pool will open at once. See
+    /// `.env.example` for guidance on choosing this relative to Postgres's own
+    /// `max_connections` when running more than one instance of this service.
+    pub db_max_connections: u32,
+    /// Minimum number of idle connections the pool tries to keep open, so a burst
+    /// of traffic after a quiet period doesn't have to pay connection-setup latency
+    /// on the first requests. `0` (the default) opens connections lazily instead.
+    pub db_min_connections: u32,
+    /// How long a query/request is allowed to wait for a connection to become
+    /// available from the pool before giving up. This is what turns pool
+    /// exhaustion into a fast, explicit error instead of a request hanging
+    /// indefinitely.
+    pub db_acquire_timeout_seconds: u64,
+    /// How long a connection may sit idle in the pool before being closed and
+    /// removed, recycling connections that would otherwise accumulate past what's
+    /// actually needed. `0` disables idle recycling (connections are never closed
+    /// for being idle).
+    pub db_idle_timeout_seconds: u64,
+    /// Maximum lifetime of a single connection before it's closed and replaced,
+    /// regardless of activity -- protects against a connection going silently
+    /// stale behind an intermediary (e.g. a proxy or load balancer in front of
+    /// Postgres) that can drop long-lived connections without either side
+    /// noticing immediately. `0` disables lifetime-based recycling.
+    pub db_max_lifetime_seconds: u64,
 }
 
 impl fmt::Debug for Settings {
@@ -30,6 +54,14 @@ impl fmt::Debug for Settings {
             .field("cors_allowed_origins", &self.cors_allowed_origins)
             .field("trusted_proxy_ips", &self.trusted_proxy_ips)
             .field("redis_url", &self.redis_url)
+            .field("db_max_connections", &self.db_max_connections)
+            .field("db_min_connections", &self.db_min_connections)
+            .field(
+                "db_acquire_timeout_seconds",
+                &self.db_acquire_timeout_seconds,
+            )
+            .field("db_idle_timeout_seconds", &self.db_idle_timeout_seconds)
+            .field("db_max_lifetime_seconds", &self.db_max_lifetime_seconds)
             .finish()
     }
 }
@@ -64,6 +96,26 @@ impl Settings {
             redis_url: std::env::var("REDIS_URL")
                 .ok()
                 .filter(|s| !s.trim().is_empty()),
+            db_max_connections: std::env::var("DB_MAX_CONNECTIONS")
+                .unwrap_or_else(|_| "10".to_string())
+                .parse()
+                .map_err(|_| "DB_MAX_CONNECTIONS must be a valid number".to_string())?,
+            db_min_connections: std::env::var("DB_MIN_CONNECTIONS")
+                .unwrap_or_else(|_| "0".to_string())
+                .parse()
+                .map_err(|_| "DB_MIN_CONNECTIONS must be a valid number".to_string())?,
+            db_acquire_timeout_seconds: std::env::var("DB_ACQUIRE_TIMEOUT_SECONDS")
+                .unwrap_or_else(|_| "30".to_string())
+                .parse()
+                .map_err(|_| "DB_ACQUIRE_TIMEOUT_SECONDS must be a valid number".to_string())?,
+            db_idle_timeout_seconds: std::env::var("DB_IDLE_TIMEOUT_SECONDS")
+                .unwrap_or_else(|_| "600".to_string())
+                .parse()
+                .map_err(|_| "DB_IDLE_TIMEOUT_SECONDS must be a valid number".to_string())?,
+            db_max_lifetime_seconds: std::env::var("DB_MAX_LIFETIME_SECONDS")
+                .unwrap_or_else(|_| "1800".to_string())
+                .parse()
+                .map_err(|_| "DB_MAX_LIFETIME_SECONDS must be a valid number".to_string())?,
         })
     }
 }
