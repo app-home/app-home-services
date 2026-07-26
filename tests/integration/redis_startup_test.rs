@@ -22,7 +22,12 @@ async fn test_startup_fails_on_unreachable_redis() {
         .args(["run", "--quiet"])
         .env("DATABASE_URL", database_url)
         .env("JWT_SECRET", "test-secret-that-is-at-least-32-bytes-long")
-        .env("DEFAULT_USER_PASSWORD", "irrelevant-for-this-test")
+        // Must clear DEFAULT_USER_PASSWORD's strength bar (see #82 /
+        // validate_default_user_password: 12+ chars, 3+ of
+        // lower/upper/digit/symbol, not a known-weak password) so this test
+        // exercises the Redis-unreachable failure path specifically, rather than
+        // failing earlier at password strength validation.
+        .env("DEFAULT_USER_PASSWORD", "Irrelevant-For-Test-9")
         // Port 1 is a privileged port very unlikely to have anything listening on it,
         // so the connection attempt fails fast rather than needing a timeout to elapse.
         .env("REDIS_URL", "redis://127.0.0.1:1")
