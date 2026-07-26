@@ -47,7 +47,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `SERVER_HOST` | No | `127.0.0.1` | HTTP server bind host. **Set to `0.0.0.0` when running in a container** (see Container Image below) or anywhere else the process needs to accept connections from outside its own host -- `127.0.0.1` only accepts local connections. |
 | `SERVER_PORT` | No | `3000` | HTTP server bind port |
 | `DEFAULT_USER_USERNAME` | No | `admin` | Default local user username |
-| `DEFAULT_USER_PASSWORD` | Yes | — | Default local user password |
+| `DEFAULT_USER_PASSWORD` | Yes | — | Default local user password. Must be at least 12 characters, contain at least 3 of {lowercase, uppercase, digits, symbols}, and not be a known weak/placeholder password (e.g. `admin123`) -- the service refuses to start otherwise. Under 16 characters is accepted but logged as a startup warning. |
 | `DEFAULT_USER_EMAIL` | No | `admin@example.com` | Default local user email |
 | `GOOGLE_CLIENT_ID` | No | — | Google OAuth client ID (empty = Google login disabled) |
 | `JWT_SECRET` | Yes | — | HMAC secret for signing JWT tokens. Must be at least 32 bytes **and** have at least 8 unique characters (rejects both short and low-entropy secrets, e.g. `aaaa...aaaa`) -- generate one with `openssl rand -hex 64` |
@@ -294,7 +294,7 @@ cargo test -- --ignored
 REDIS_URL=redis://127.0.0.1:6379 cargo test --test integration -- --ignored redis_rate_limit
 ```
 
-- **Unit tests**: Session entity, JWT service, rate limiter (in-memory), trusted-proxy IP resolution, user action audit, password hashing
+- **Unit tests**: Session entity, JWT service, rate limiter (in-memory), trusted-proxy IP resolution, user action audit, password hashing, default admin password strength
 - **Integration tests** (ignored by default): Login, logout, refresh, refresh rate limiting, CORS, rate limiting, startup hardening, Redis-backed rate limiting, Redis auth enforcement, live Redis connection failure, DB-backed health check
 
 ### Podman test environment
@@ -385,6 +385,7 @@ An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limite
 - Refresh tokens hashed with bcrypt before storage
 - JWT tokens signed with HMAC-SHA256
 - `JWT_SECRET` must be at least 32 bytes long and have at least 8 unique characters -- the service refuses to start otherwise, and additionally warns (without refusing to start) if character diversity is still low relative to the secret's length
+- `DEFAULT_USER_PASSWORD` (the seeded admin account's password) must be at least 12 characters with at least 3 of {lowercase, uppercase, digits, symbols}, and must not be a known weak/placeholder password (e.g. `admin123`, `changeme`) -- the service refuses to start otherwise, since this account has a predictable, well-known username
 - No plain-text passwords in logs (structured field logging)
 - Rate limiting per IP on both login and refresh (independent counters) to prevent brute-force attacks, backed by Redis for multi-instance deployments (see Rate Limiting above)
 - `X-Forwarded-For`/`X-Real-IP` only trusted from configured reverse proxies (`TRUSTED_PROXY_IPS`), preventing rate-limit bypass via header spoofing
