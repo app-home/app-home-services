@@ -116,7 +116,7 @@ trusted_proxy_ips: Vec<IpAddr>
 | Env Var | Default | Description |
 |---------|---------|-------------|
 | `DEFAULT_USER_USERNAME` | `admin` | Seed user (only on empty DB) |
-| `DEFAULT_USER_PASSWORD` | **required** | Seed user password (bcrypt-hashed) |
+| `DEFAULT_USER_PASSWORD` | **required** | Seed user password (bcrypt-hashed). Validated by `validate_default_user_password` (see #82): min 12 chars, 3+ of {lower, upper, digit, symbol}, rejects known weak/placeholder passwords (`KNOWN_WEAK_PASSWORDS`); non-fatal warning under 16 chars |
 | `DEFAULT_USER_EMAIL` | `admin@example.com` | Seed user email |
 | `GOOGLE_CLIENT_ID` | (empty) | Google OAuth client ID |
 | `JWT_SECRET` | **required** | Min 32 bytes; entropy validated |

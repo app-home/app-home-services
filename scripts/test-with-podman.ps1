@@ -23,7 +23,9 @@
       DATABASE_URL   = postgres://app_home:app_home_test@localhost:15432/app_home_test
       REDIS_URL      = redis://localhost:16379
       JWT_SECRET     = test-secret-key-for-podman-test-environment
-      DEFAULT_USER_PASSWORD = test-password
+      DEFAULT_USER_PASSWORD = Test-Password-9! (must satisfy
+        validate_default_user_password: 12+ chars, 3+ of
+        lower/upper/digit/symbol, not a known-weak password -- see #82)
       CORS_ALLOWED_ORIGINS  = http://localhost:8080
       RUST_LOG       = info
 
@@ -208,7 +210,10 @@ try {
     $env:DATABASE_URL = "postgres://app_home:app_home_test@localhost:15432/app_home_test"
     $env:REDIS_URL = "redis://localhost:16379"
     $env:JWT_SECRET = "test-secret-key-for-podman-test-environment"
-    $env:DEFAULT_USER_PASSWORD = "test-password"
+    # Must satisfy validate_default_user_password (#82): 12+ chars, at least 3 of
+    # lower/upper/digit/symbol character classes, and not a known-weak password.
+    # "test-password" no longer qualifies (only lowercase + hyphen).
+    $env:DEFAULT_USER_PASSWORD = "Test-Password-9!"
     $env:CORS_ALLOWED_ORIGINS = "http://localhost:8080"
     $env:RUST_LOG = "info"
 
