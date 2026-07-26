@@ -1,0 +1,20 @@
+name: Enforce main only from development
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  check-base-branch:
+    name: Require development as source
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify PR source branch
+        run: |
+          if [ "${{ github.head_ref }}" != "development" ]; then
+            echo "::error::PRs into main must come from 'development', not '${{ github.head_ref }}'."
+            echo "Merge your branch into development first, then open a PR from development -> main."
+            exit 1
+          fi
+          echo "OK: PR comes from development."
