@@ -112,6 +112,11 @@ mod tests {
             cors_allowed_origins: String::new(),
             trusted_proxy_ips: vec![],
             redis_url,
+            db_max_connections: 10,
+            db_min_connections: 0,
+            db_acquire_timeout_seconds: 30,
+            db_idle_timeout_seconds: 600,
+            db_max_lifetime_seconds: 1800,
         }
     }
 
