@@ -11,5 +11,5 @@ uuid = { version = "1", features = ["v7", "serde"] }
 tokio = { version = "1", features = ["sync"] }
 utoipa = { version = "5.5" }
 axum = "0.8"
-jsonwebtoken = "10"
+jsonwebtoken = "11"
 async-trait = "0.1"

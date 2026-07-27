@@ -14,7 +14,7 @@ thiserror = "2"
 async-trait = "0.1"
 sqlx = { version = "0.9", features = ["postgres", "uuid", "runtime-tokio", "chrono"] }
 reqwest = { version = "0.13", features = ["json"] }
-jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 axum = "0.8"
 tokio = { version = "1", features = ["sync", "rt", "time", "macros", "net"] }
 redis = { version = "1", features = ["tokio-comp", "connection-manager"] }
