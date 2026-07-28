@@ -35,6 +35,21 @@ pub struct Settings {
     /// Postgres) that can drop long-lived connections without either side
     /// noticing immediately. `0` disables lifetime-based recycling.
     pub db_max_lifetime_seconds: u64,
+    /// IP addresses allowed to reach `GET /metrics` (e.g. the Prometheus server's
+    /// IP). Resolved the same way as rate-limiting IPs -- honoring
+    /// `X-Forwarded-For`/`X-Real-IP` only from `trusted_proxy_ips` -- so this works
+    /// correctly behind a reverse proxy too. Loopback addresses are always allowed
+    /// regardless of this list, so local scraping/testing never gets locked out.
+    ///
+    /// Empty (the default) means no IP restriction is applied -- `/metrics` is
+    /// reachable by anything that can reach the port, same as before this setting
+    /// existed. This is a deliberately backward-compatible default: the actual fix
+    /// for `/metrics` being unauthenticated-by-default was changing `SERVER_HOST`'s
+    /// default to `127.0.0.1` (see #80); this allowlist is additional,
+    /// defense-in-depth hardening for deployments that explicitly opt into
+    /// `SERVER_HOST=0.0.0.0` (e.g. containers) and want `/metrics` locked down
+    /// without standing up a full reverse-proxy/auth setup. See #83.
+    pub metrics_allowed_ips: Vec<IpAddr>,
 }
 
 impl fmt::Debug for Settings {
@@ -62,6 +77,7 @@ impl fmt::Debug for Settings {
             )
             .field("db_idle_timeout_seconds", &self.db_idle_timeout_seconds)
             .field("db_max_lifetime_seconds", &self.db_max_lifetime_seconds)
+            .field("metrics_allowed_ips", &self.metrics_allowed_ips)
             .finish()
     }
 }
@@ -116,6 +132,13 @@ impl Settings {
                 .unwrap_or_else(|_| "1800".to_string())
                 .parse()
                 .map_err(|_| "DB_MAX_LIFETIME_SECONDS must be a valid number".to_string())?,
+            metrics_allowed_ips: std::env::var("METRICS_ALLOWED_IPS")
+                .unwrap_or_else(|_| String::new())
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| s.parse::<IpAddr>().ok())
+                .collect(),
         })
     }
 }
