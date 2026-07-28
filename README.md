@@ -58,6 +58,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `REDIS_URL` | No | — | Redis URL for shared rate-limit counters; empty = in-memory (single instance only) |
 | `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated allowed origins; empty = same-origin only |
 | `TRUSTED_PROXY_IPS` | No | — | Comma-separated reverse proxy IPs trusted to set X-Forwarded-For/X-Real-IP; empty = never trusted |
+| `METRICS_ALLOWED_IPS` | No | — | Comma-separated IPs allowed to reach `GET /metrics` (e.g. your Prometheus server); empty = no restriction. Loopback is always allowed regardless. See Metrics & Alerting below. |
 
 ## API Endpoints
 
@@ -90,7 +91,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 | Method | Path | Auth | Description |
 | -------- | ------ | ------ | ------------- |
 | GET | `/api/health` | No | Health check -- runs `SELECT 1` against the database pool (2s timeout); `200` if it succeeds, `503` if the database is unreachable or the check times out |
-| GET | `/metrics` | No | Prometheus metrics (see Metrics & Alerting below) |
+| GET | `/metrics` | No (optionally IP-restricted) | Prometheus metrics; no credentials required, but reachability can be restricted to an IP allowlist via `METRICS_ALLOWED_IPS` (see Metrics & Alerting below) |
 
 ### API Documentation (OpenAPI / Swagger)
 
@@ -224,8 +225,8 @@ and Domain-Driven Design. Each bounded context lives in its own workspace crate:
 | `crates/auth/` | Auth context — domain, use cases, inbound/outbound adapters |
 | `crates/profiles/` | User profiles context — domain, use cases, adapters |
 | `crates/admin/` | Admin user management context — domain, use cases, adapters |
-| `crates/infrastructure/` | Shared infrastructure — database pool, telemetry, rate limiter setup |
-| `crates/shared/` | Shared types — config settings, common utilities, cross-context ports (`UserDirectory`, `RateLimiter`), event bus |
+| `crates/infrastructure/` | Shared infrastructure — database pool, telemetry, rate limiter setup, `/metrics` IP allowlist guard |
+| `crates/shared/` | Shared types — config settings, common utilities, cross-context ports (`UserDirectory`, `RateLimiter`), event bus, client IP resolution (`net`) |
 
 ### Why a modular monolith, and how to extract a context later
 
@@ -251,6 +252,8 @@ the `UserDirectory` port), and concrete signals for when that becomes worth doin
 | Adapters | `adapters/inbound/` | HTTP handlers + auth middleware |
 | Adapters | `adapters/outbound/` | `PostgresUserRepo`, `PostgresUserDirectory`, `PostgresSessionRepo`, `JwtServiceImpl`, `MemoryRateLimiter`, `RedisRateLimiter`, `GoogleAuthProvider` |
 | Config | `config/` | `AuthSettings` (auth-specific env vars) |
+
+Client IP resolution (`resolve_client_ip`, used by login/refresh rate limiting and by the `/metrics` IP allowlist guard) lives in `crates/shared/src/net.rs`, not in `auth`, since more than one bounded context needs it.
 
 For the other bounded contexts, see:
 - `crates/profiles/src/` — Profile entity, `ProfileRepository`, `get_profile` / `update_profile` use cases
@@ -294,8 +297,8 @@ cargo test -- --ignored
 REDIS_URL=redis://127.0.0.1:6379 cargo test --test integration -- --ignored redis_rate_limit
 ```
 
-- **Unit tests**: Session entity, JWT service, rate limiter (in-memory), trusted-proxy IP resolution, user action audit, password hashing, default admin password strength
-- **Integration tests** (ignored by default): Login, logout, refresh, refresh rate limiting, CORS, rate limiting, startup hardening, Redis-backed rate limiting, Redis auth enforcement, live Redis connection failure, DB-backed health check
+- **Unit tests**: Session entity, JWT service, rate limiter (in-memory), client IP resolution, `/metrics` IP allowlist decision logic, user action audit, password hashing, default admin password strength
+- **Integration tests** (ignored by default): Login, logout, refresh, refresh rate limiting, CORS, rate limiting, startup hardening, Redis-backed rate limiting, Redis auth enforcement, live Redis connection failure, DB-backed health check, `/metrics` reachability
 
 ### Podman test environment
 
@@ -329,7 +332,7 @@ ghcr.io/app-home/app-home-services:<commit-sha>
 
 A separate scheduled workflow (`.github/workflows/cleanup-container-images.yml`) prunes old untagged image versions from the registry.
 
-**⚠️ `SERVER_HOST` must be set explicitly when running the container.** The service defaults to binding `127.0.0.1` (see Environment Variables above), which only accepts connections from inside the container's own network namespace -- with the default, the container starts successfully but is **unreachable** through any published port. Always pass `SERVER_HOST=0.0.0.0` (the container's own network isolation is what provides the safety `127.0.0.1` would otherwise be protecting on bare metal):
+**⚠️ `SERVER_HOST` must be set explicitly when running the container.** The service defaults to binding `127.0.0.1` (see Environment Variables above), which only accepts connections from inside the container's own network namespace -- with the default, the container starts successfully but is **unreachable** through any published port. Always pass `SERVER_HOST=0.0.0.0` (the container's own network isolation is what provides the safety `127.0.0.1` would otherwise be protecting on bare metal). Since this necessarily exposes every route on every interface, consider also setting `METRICS_ALLOWED_IPS` (see Metrics & Alerting below) if `/metrics` shouldn't be reachable by everything that can reach the container:
 
 ```bash
 docker run -p 3000:3000 \
@@ -356,7 +359,7 @@ The service exposes a Prometheus-compatible metrics endpoint:
 GET /metrics
 ```
 
-This is not authenticated, so it should only be reachable from inside your monitoring network/namespace, not exposed publicly -- same expectation as any Prometheus scrape target.
+This does not require credentials, so it should still only be reachable from inside your monitoring network/namespace where possible -- same expectation as any Prometheus scrape target. As additional, optional hardening, reachability can be restricted to a specific set of IPs via `METRICS_ALLOWED_IPS` (see below).
 
 ### Available metrics
 
@@ -375,6 +378,19 @@ scrape_configs:
       - targets: ["app-home-services:3000"]
 ```
 
+### Restricting access to `/metrics`
+
+Set `METRICS_ALLOWED_IPS` to a comma-separated list of IPs (e.g. your Prometheus server's IP) to reject requests to `/metrics` from anything else with `403 Forbidden`:
+
+```bash
+METRICS_ALLOWED_IPS=10.0.0.5,10.0.0.6
+```
+
+- Leave unset (the default) for no restriction -- `/metrics` is reachable by anything that can reach the port, same as before this option existed.
+- Loopback addresses (`127.0.0.1`, `::1`) are always allowed regardless of this list, so local scraping/testing never gets locked out.
+- Resolved the same trusted-proxy-aware way as rate limiting (`TRUSTED_PROXY_IPS`) -- `X-Forwarded-For`/`X-Real-IP` are honored only when the direct connection comes from a trusted proxy, so this works correctly whether Prometheus reaches the service directly or through a reverse proxy.
+- This is separate from, and additional to, `SERVER_HOST` defaulting to `127.0.0.1` (see Security below) -- relevant once you've explicitly opted into `SERVER_HOST=0.0.0.0` (e.g. the container image) and want `/metrics` locked down without standing up a full reverse-proxy/auth setup.
+
 ### Alerting
 
 An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limiter_redis_errors_total` increases at all within a 5-minute window. The threshold starts deliberately low (`> 0`) since there's no baseline yet for what "normal" transient Redis noise looks like in this deployment -- see [`docs/alerting.md`](docs/alerting.md) for the full reasoning and a concrete process for raising the threshold once you have a couple of weeks of real data.
@@ -392,6 +408,7 @@ An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limite
 - Password login always performs exactly one bcrypt verification (real or a fixed-cost dummy), closing the timing side-channel that would otherwise reveal whether a username exists; a uniform 50 ms delay is layered on top as additional defense-in-depth
 - CORS denied by default (same-origin only)
 - HTTP server binds to `127.0.0.1` by default (loopback only) -- see the `SERVER_HOST` note under Environment Variables and Container Image above for when and how to change this
+- `/metrics` requires no credentials but can be restricted to an IP allowlist (`METRICS_ALLOWED_IPS`), unrestricted by default -- see Metrics & Alerting above
 - Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
 - `/api/health` actively checks database connectivity (`SELECT 1` with a 2s timeout, `503` on failure) rather than always reporting healthy -- see Database Connection Pool above
 - Session state transitions are one-way (active → inactive)

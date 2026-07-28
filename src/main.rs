@@ -17,6 +17,7 @@ use admin::adapters::inbound::admin_routes::{
 use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
 use app_home_services::api_doc::ApiDoc;
 use app_home_services::infrastructure::config::Settings;
+use app_home_services::infrastructure::metrics_guard::{MetricsGuardConfig, metrics_ip_allowlist};
 use app_home_services::infrastructure::rate_limiter_setup::{
     RateLimiterErrorCounters, build_rate_limiters,
 };
@@ -77,6 +78,17 @@ async fn main() {
         );
     }
 
+    if settings.metrics_allowed_ips.is_empty() {
+        tracing::info!(
+            "METRICS_ALLOWED_IPS not configured: /metrics is reachable by anything that can reach this process's port"
+        );
+    } else {
+        tracing::info!(
+            allowed = ?settings.metrics_allowed_ips,
+            "/metrics restricted to an IP allowlist (plus loopback, always allowed)"
+        );
+    }
+
     let user_repo = PostgresUserRepo::new(pool.clone());
     let session_repo = PostgresSessionRepo::new(pool.clone());
     let profile_repo = Arc::new(PostgresProfileRepo::new(pool.clone()));
@@ -129,13 +141,18 @@ async fn main() {
 
     if settings.server_host == "0.0.0.0" {
         tracing::warn!(
-            "Binding to 0.0.0.0 exposes the /metrics endpoint (no auth) and all API routes on every network interface; set SERVER_HOST=127.0.0.1 if this is unintended"
+            "Binding to 0.0.0.0 exposes all API routes on every network interface; set SERVER_HOST=127.0.0.1 if this is unintended. /metrics specifically can additionally be restricted via METRICS_ALLOWED_IPS."
         );
     }
 
     let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
     let health_check_pool = pool.clone();
+
+    let metrics_guard_config = MetricsGuardConfig {
+        allowed_ips: settings.metrics_allowed_ips.clone(),
+        trusted_proxy_ips: settings.trusted_proxy_ips.clone(),
+    };
 
     let state = auth::AppState::new(
         user_repo,
@@ -172,6 +189,17 @@ async fn main() {
         }
     };
 
+    // Kept as its own sub-router (merged below) rather than a plain `.route()` on the
+    // main router, so the IP allowlist middleware/Extension only ever apply to
+    // `/metrics` -- not to every other route on the service.
+    let metrics_router = axum::Router::new()
+        .route(
+            "/metrics",
+            get(move || std::future::ready(metrics_handle.render())),
+        )
+        .layer(axum::middleware::from_fn(metrics_ip_allowlist))
+        .layer(Extension(metrics_guard_config));
+
     let app = axum::Router::new()
         .route("/api/auth/login/password", post(login_password_handler))
         .route("/api/auth/login/google", post(login_google_handler))
@@ -192,16 +220,12 @@ async fn main() {
         // so it needs its own handle to it -- this clone is cheap (PgPool wraps an
         // Arc internally), not a second pool.
         .layer(Extension(health_check_pool))
-        // Not gated behind auth: Prometheus scrape endpoints are conventionally
-        // reached only from inside a private network / the cluster's monitoring
-        // namespace, never exposed publicly. If this service is ever reachable from
-        // the public internet without a network boundary in front of it, this route
-        // should not be exposed as-is (see .env.example's CORS/proxy notes for the
-        // service's general public-exposure assumptions).
-        .route(
-            "/metrics",
-            get(move || std::future::ready(metrics_handle.render())),
-        )
+        // Prometheus scrape endpoints are conventionally reached only from inside a
+        // private network / the cluster's monitoring namespace, never exposed
+        // publicly. `/metrics` is still unauthenticated (no credentials required),
+        // but is now additionally gated by an IP allowlist when METRICS_ALLOWED_IPS
+        // is configured -- see crates/infrastructure/src/metrics_guard.rs and #83.
+        .merge(metrics_router)
         .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
         .layer(cors)
         .with_state(state);
@@ -214,7 +238,8 @@ async fn main() {
 
     // `into_make_service_with_connect_info` exposes the real TCP peer address to
     // extractors (`ConnectInfo<SocketAddr>`), which the login and refresh handlers use
-    // to safely resolve the client IP for rate limiting (see `resolve_client_ip`).
+    // to safely resolve the client IP for rate limiting (see `resolve_client_ip`), and
+    // which the `/metrics` IP allowlist guard uses the same way.
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

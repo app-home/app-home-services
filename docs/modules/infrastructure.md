@@ -2,13 +2,14 @@
 
 ## Purpose
 
-Cross-cutting infrastructure services consumed by all bounded contexts. Provides database pool creation, telemetry (logging + metrics), and rate limiter setup. Re-exports `shared::config::settings::Settings`. Has no domain logic or HTTP endpoints of its own.
+Cross-cutting infrastructure services consumed by all bounded contexts. Provides database pool creation, telemetry (logging + metrics), rate limiter setup, and the `/metrics` IP allowlist guard. Re-exports `shared::config::settings::Settings`. Has no domain logic or HTTP endpoints of its own.
 
 ## Dependencies
 
 | Crate | Role |
 |-------|------|
-| `shared` | `Settings` config, `RateLimiter` trait |
+| `shared` | `Settings` config, `RateLimiter` trait, `net::resolve_client_ip`, `api::ErrorResponse` |
+| `axum` | Middleware/extractor types for the `/metrics` guard (`metrics_guard`) |
 
 ## Modules
 
@@ -32,6 +33,21 @@ Re-exports `shared::config::settings::Settings` — no additional logic.
 **Metrics** (`telemetry::metrics`):
 - `install_prometheus_recorder()` — Installs Prometheus recorder, returns `PrometheusHandle` used by `GET /metrics`
 - Custom metric: `rate_limiter_redis_errors_total{scope="login", scope="refresh"}` — polled every 15 seconds
+
+### `metrics_guard`
+
+IP allowlist for `GET /metrics`, applied as an Axum middleware scoped to just that route (not the whole router):
+
+```rust
+pub struct MetricsGuardConfig { pub allowed_ips: Vec<IpAddr>, pub trusted_proxy_ips: Vec<IpAddr> }
+pub fn is_metrics_access_allowed(ip: IpAddr, allowed_ips: &[IpAddr]) -> bool
+pub async fn metrics_ip_allowlist(...) -> Response  // the actual middleware fn
+```
+
+- `is_metrics_access_allowed` is a standalone, synchronous, unit-tested pure function -- the actual allow/deny decision, kept separate from the `axum`-specific middleware wrapper so it can be tested directly against IP addresses.
+- Empty `allowed_ips` (the `METRICS_ALLOWED_IPS` default) means no restriction -- backward compatible with the endpoint's pre-existing unrestricted behavior.
+- Loopback is always allowed regardless of the configured list.
+- Resolves the caller's IP via `shared::net::resolve_client_ip`, the same trusted-proxy-aware logic login/refresh rate limiting uses, so this is correct behind a reverse proxy too.
 
 ### `rate_limiter`
 
@@ -77,6 +93,7 @@ pub async fn build_rate_limiters(settings: &Settings)
 | `RATE_LIMIT_WINDOW_SECONDS` | `300` | Window duration |
 | `CORS_ALLOWED_ORIGINS` | (empty) | Comma-separated; empty = same-origin only |
 | `TRUSTED_PROXY_IPS` | (empty) | Comma-separated IPs for X-Forwarded-For trust |
+| `METRICS_ALLOWED_IPS` | (empty) | Comma-separated IPs allowed to reach `/metrics`; empty = no restriction; loopback always allowed |
 | `REDIS_URL` | (optional) | If set, uses `RedisRateLimiter`; unset = `MemoryRateLimiter` |
 
 ## Integration
@@ -97,8 +114,16 @@ let pool = infrastructure::database::create_pool(&settings).await?;
 let (rate_limiter, refresh_rate_limiter, counters) =
     infrastructure::rate_limiter_setup::build_rate_limiters(&settings).await?;
 
-// /metrics route (Prometheus scrape endpoint)
-app.route("/metrics", get(move || std::future::ready(metrics_handle.render())))
+// /metrics as its own sub-router, gated by the IP allowlist middleware, merged
+// into the main app router
+let metrics_router = Router::new()
+    .route("/metrics", get(move || std::future::ready(metrics_handle.render())))
+    .layer(middleware::from_fn(metrics_ip_allowlist))
+    .layer(Extension(MetricsGuardConfig {
+        allowed_ips: settings.metrics_allowed_ips.clone(),
+        trusted_proxy_ips: settings.trusted_proxy_ips.clone(),
+    }));
+app.merge(metrics_router)
 
 // /api/health needs its own handle to the pool to run its connectivity check
 app.layer(Extension(pool.clone()))

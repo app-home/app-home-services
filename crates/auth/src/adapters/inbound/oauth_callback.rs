@@ -10,7 +10,7 @@ use serde::Deserialize;
 use utoipa::ToSchema;
 
 use crate::AppState;
-use crate::adapters::inbound::login_routes::resolve_client_ip;
+use shared::net::resolve_client_ip;
 use crate::adapters::inbound::responses::{ErrorResponse, GoogleAuthResponse};
 use crate::application::use_cases::login_with_google;
 use crate::domain::errors::AuthError;

@@ -8,7 +8,7 @@ Authentication and session management bounded context. Handles user login (passw
 
 | Crate | Role |
 |-------|------|
-| `shared` | Domain events, value objects (`Email`, `HashedPassword`, `AuthMethod`), `EventBus`, `RateLimiter` trait, `AuthenticatedUser` extractor |
+| `shared` | Domain events, value objects (`Email`, `HashedPassword`, `AuthMethod`), `EventBus`, `RateLimiter` trait, `AuthenticatedUser` extractor, `net::resolve_client_ip` |
 
 ## Domain Layer
 
@@ -77,7 +77,7 @@ Aggregate root containing `User + Vec<Session> + pending domain events`.
 | `POST` | `/api/auth/logout` | Bearer JWT | `LogoutRequest {session_id}` | `StatusResponse` | 400, 401, 500 |
 | `POST` | `/api/auth/refresh` | None | `RefreshTokenRequest {refresh_token}` | `RefreshResponse` | 401, 422, 429, 500 |
 
-**Proxy-aware IP resolution**: login and refresh handlers use `resolve_client_ip()` which honours `X-Forwarded-For` / `X-Real-IP` from trusted proxies (`TRUSTED_PROXY_IPS`).
+**Proxy-aware IP resolution**: login and refresh handlers use `shared::net::resolve_client_ip()` (moved there from this crate -- see #83 -- since `infrastructure`'s `/metrics` IP allowlist guard needs the same logic) which honours `X-Forwarded-For` / `X-Real-IP` from trusted proxies (`TRUSTED_PROXY_IPS`).
 
 **Contracts**: [login-password](../../specs/002-audit-security-hardening/contracts/login-password.md) · [login-google](../../specs/002-audit-security-hardening/contracts/login-google.md) · [logout](../../specs/002-audit-security-hardening/contracts/logout.md) · [refresh](../../specs/002-audit-security-hardening/contracts/refresh.md)
 

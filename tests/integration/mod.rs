@@ -4,6 +4,7 @@ mod health_test;
 mod login_google_test;
 mod login_password_test;
 mod logout_test;
+mod metrics_test;
 mod rate_limit_test;
 mod redis_auth_test;
 mod redis_connection_failure_test;
