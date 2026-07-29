@@ -7,10 +7,10 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use shared::net::resolve_client_ip;
 use utoipa::ToSchema;
 
 use crate::AppState;
-use crate::adapters::inbound::login_routes::resolve_client_ip;
 use crate::adapters::inbound::responses::{ErrorResponse, RefreshResponse};
 use crate::application::use_cases::refresh_token;
 use crate::domain::errors::AuthError;

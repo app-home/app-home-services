@@ -61,6 +61,14 @@ Shared request/response types for OpenAPI:
 
 Used by profiles, admin, and auth/logout handlers.
 
+## Networking (`net`)
+
+```rust
+pub fn resolve_client_ip(peer_ip: IpAddr, headers: &HeaderMap, trusted_proxies: &[IpAddr]) -> IpAddr
+```
+
+Resolves the "real" client IP for a request, honoring `X-Forwarded-For`/`X-Real-IP` only when the direct TCP peer is in `trusted_proxies` -- otherwise any client could spoof these headers. Cross-cutting (used by `auth`'s login/refresh rate limiting and by `infrastructure`'s `/metrics` IP allowlist guard), which is why it lives here rather than being owned by whichever context happened to need it first. Unit-tested directly in this module.
+
 ## Configuration
 
 **`Settings`** — all infra-level config:
@@ -75,6 +83,12 @@ pub struct Settings {
     pub cors_allowed_origins: String,
     pub trusted_proxy_ips: Vec<IpAddr>,
     pub redis_url: Option<String>,
+    pub db_max_connections: u32,
+    pub db_min_connections: u32,
+    pub db_acquire_timeout_seconds: u64,
+    pub db_idle_timeout_seconds: u64,
+    pub db_max_lifetime_seconds: u64,
+    pub metrics_allowed_ips: Vec<IpAddr>,
 }
 ```
 
@@ -94,6 +108,15 @@ Loaded via `Settings::from_env()`. Debug impl redacts credentials.
 
 Implemented by `MemoryRateLimiter` and `RedisRateLimiter` (in `infrastructure`).
 
+**`UserDirectory`** trait (`user_directory` module):
+
+| Method | Description |
+|--------|-------------|
+| `get_user_summary(id)` | Look up one user's identity fields |
+| `list_user_summaries()` | List every user's identity fields |
+
+Implemented by `auth` (`PostgresUserDirectory`), consumed by `admin` -- see `docs/modules/admin.md`.
+
 ## Dependency Graph
 
 ```
@@ -106,10 +129,11 @@ shared (leaf)
 ```
 
 No bounded context depends on another — `shared` is the shared kernel at the base.
-This clean graph, plus the `AuthenticatedUser` extractor and `EventBus` above (both
-of which let `profiles`/`admin` interact with cross-cutting or `auth`-originated
-concerns without depending on the `auth` crate directly), are what make it
-plausible to extract a context into its own service later without a rewrite. See
+This clean graph, plus the `AuthenticatedUser` extractor, `EventBus`, and
+`UserDirectory` above (all of which let `profiles`/`admin` interact with
+cross-cutting or `auth`-originated concerns without depending on the `auth` crate
+directly), are what make it plausible to extract a context into its own service
+later without a rewrite. See
 [`docs/adr/0001-modular-monolith.md`](../adr/0001-modular-monolith.md) for the full
 reasoning, including the coupling that *isn't* this clean yet (documented in
-`docs/modules/admin.md` and `docs/modules/profiles.md`).
+`docs/modules/profiles.md`).

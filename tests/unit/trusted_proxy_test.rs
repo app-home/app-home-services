@@ -1,7 +1,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 
-use auth::adapters::inbound::login_routes::resolve_client_ip;
 use axum::http::HeaderMap;
+use shared::net::resolve_client_ip;
 
 fn ip(a: u8, b: u8, c: u8, d: u8) -> IpAddr {
     IpAddr::V4(Ipv4Addr::new(a, b, c, d))

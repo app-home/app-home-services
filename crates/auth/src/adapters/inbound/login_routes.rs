@@ -1,4 +1,4 @@
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 
 use axum::{
     Json,
@@ -7,6 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde::Deserialize;
+use shared::net::resolve_client_ip;
 use utoipa::ToSchema;
 
 use crate::AppState;
@@ -23,35 +24,6 @@ pub struct PasswordLoginRequest {
     username: String,
     #[schema(min_length = 1, max_length = 4096, example = "hunter2")]
     password: String,
-}
-
-pub fn resolve_client_ip(
-    peer_ip: IpAddr,
-    headers: &axum::http::HeaderMap,
-    trusted_proxies: &[IpAddr],
-) -> IpAddr {
-    if !trusted_proxies.contains(&peer_ip) {
-        return peer_ip;
-    }
-
-    if let Some(value) = headers
-        .get("X-Forwarded-For")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .and_then(|v| v.trim().parse::<IpAddr>().ok())
-    {
-        return value;
-    }
-
-    if let Some(value) = headers
-        .get("X-Real-IP")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<IpAddr>().ok())
-    {
-        return value;
-    }
-
-    peer_ip
 }
 
 #[utoipa::path(

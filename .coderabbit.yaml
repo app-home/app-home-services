@@ -1,0 +1,40 @@
+language: "en-US"
+early_access: true
+reviews:
+  profile: "chill"
+  request_changes_workflow: true
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    base_branches:
+      - development
+      - main
+    ignore_title_patterns:
+      - "^chore"
+      - "^docs"
+      - "^WIP"
+      - "^wip"
+  path_instructions:
+    - path: "**/*.rs"
+      instructions: |
+        Review Rust code following the project's conventions:
+        - Edition 2024, 100 max width, 4-space tabs (see rustfmt.toml)
+        - Workspace with crates: shared, auth, infrastructure, profiles, admin
+        - Follow existing patterns (hexagonal architecture, DDD)
+        - Ensure all public APIs have doc comments
+        - No unsafe code unless justified
+        - Tests follow existing patterns (unit in-module, integration in tests/integration)
+    - path: "**/migrations/*.sql"
+      instructions: |
+        Review SQL migrations for correctness, backward compatibility, and idempotency.
+    - path: "**/contracts/*.md"
+      instructions: |
+        Validate contract docs match actual API endpoint signatures.
+    - path: "**/specs/**/*.md"
+      instructions: |
+        Ensure implementation matches the spec.
+chat:
+  auto_reply: true
