@@ -9,6 +9,9 @@ reviews:
   collapse_walkthrough: false
   auto_review:
     enabled: true
+    base_branches:
+      - development
+      - main
     ignore_title_patterns:
       - "^chore"
       - "^docs"
