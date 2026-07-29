@@ -1,5 +1,5 @@
-use app_home_services::domain::entities::user::User;
-use app_home_services::domain::entities::user_action::UserAction;
+use auth::domain::entities::user::User;
+use auth::domain::entities::user_action::UserAction;
 use shared::domain::value_objects::auth_method::AuthMethod;
 use shared::domain::value_objects::auth_provider::AuthProvider;
 use shared::domain::value_objects::email::Email;
