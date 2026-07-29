@@ -12,11 +12,10 @@ reviews:
     base_branches:
       - development
       - main
-    ignore_title_patterns:
-      - "^chore"
-      - "^docs"
-      - "^WIP"
-      - "^wip"
+    ignore_title_keywords:
+      - "chore"
+      - "docs"
+      - "wip"
   path_instructions:
     - path: "**/*.rs"
       instructions: |
