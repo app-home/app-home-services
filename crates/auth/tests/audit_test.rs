@@ -1,4 +1,4 @@
-use app_home_services::domain::entities::user_action::{NewUserAction, UserAction};
+use auth::domain::entities::user_action::{NewUserAction, UserAction};
 use shared::domain::value_objects::auth_method::AuthMethod;
 use shared::domain::value_objects::event_type::EventType;
 use uuid::Uuid;

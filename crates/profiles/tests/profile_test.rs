@@ -5,15 +5,15 @@ use async_trait::async_trait;
 use chrono::Utc;
 use uuid::Uuid;
 
-use app_home_services::profiles::adapters::inbound::responses::{
+use profiles::adapters::inbound::responses::{
     ProfileResponse, UpdateProfileRequest,
 };
-use app_home_services::profiles::application::ports::profile_repository::ProfileRepository;
-use app_home_services::profiles::application::use_cases::{get_profile, update_profile};
-use app_home_services::profiles::domain::entities::profile::UserProfile;
-use app_home_services::profiles::domain::errors::ProfileError;
-use app_home_services::profiles::domain::value_objects::avatar_url::AvatarUrl;
-use app_home_services::profiles::domain::value_objects::bio::Bio;
+use profiles::application::ports::profile_repository::ProfileRepository;
+use profiles::application::use_cases::{get_profile, update_profile};
+use profiles::domain::entities::profile::UserProfile;
+use profiles::domain::errors::ProfileError;
+use profiles::domain::value_objects::avatar_url::AvatarUrl;
+use profiles::domain::value_objects::bio::Bio;
 
 // ---------------------------------------------------------------------------
 // Mock repository

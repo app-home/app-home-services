@@ -1,4 +1,4 @@
-use app_home_services::domain::entities::session::{NewSession, Session};
+use auth::domain::entities::session::{NewSession, Session};
 use chrono::{Duration, Utc};
 use shared::domain::value_objects::auth_method::AuthMethod;
 use shared::domain::value_objects::hashed_password::HashedPassword;

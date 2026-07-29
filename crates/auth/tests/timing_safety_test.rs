@@ -1,7 +1,7 @@
 use std::time::{Duration, Instant};
 
-use app_home_services::domain::entities::user::User;
-use app_home_services::domain::services::password_verification::verify_password_timing_safe;
+use auth::domain::entities::user::User;
+use auth::domain::services::password_verification::verify_password_timing_safe;
 use shared::domain::value_objects::auth_provider::AuthProvider;
 use shared::domain::value_objects::email::Email;
 use shared::domain::value_objects::hashed_password::HashedPassword;
