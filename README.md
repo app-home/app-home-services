@@ -38,12 +38,13 @@ User authentication service supporting local password login, Google OAuth, sessi
 
 | Variable | Required | Default | Description |
 | ---------- | ---------- | --------- | ------------- |
-| `DATABASE_URL` | Yes | — | PostgreSQL connection string |
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string. See the TLS notes in `.env.example`; `sslmode=disable` against a non-loopback host aborts startup (see `docs/postgres-ssl.md`). |
 | `DB_MAX_CONNECTIONS` | No | `10` | Max connections this instance's pool will open. With N instances against one Postgres, they together open up to `N * DB_MAX_CONNECTIONS` -- keep that under Postgres's own `max_connections`. See Database Connection Pool below. |
 | `DB_MIN_CONNECTIONS` | No | `0` | Idle connections the pool tries to keep pre-warmed. `0` = open lazily on demand. |
 | `DB_ACQUIRE_TIMEOUT_SECONDS` | No | `30` | How long a request waits for a pool connection before failing with a clear timeout instead of hanging. |
 | `DB_IDLE_TIMEOUT_SECONDS` | No | `600` | How long a connection may sit idle before being closed. `0` disables idle recycling. |
 | `DB_MAX_LIFETIME_SECONDS` | No | `1800` | Max lifetime of a connection before forced recycling, guarding against silently-stale connections behind a proxy/load balancer. `0` disables this. |
+| `DB_REQUIRE_SSL` | No | `false` | Force the database connection to use `sslmode=verify-full`, replacing any `sslmode` in `DATABASE_URL`. For environments that demand an encrypted, certificate-verified Postgres connection (e.g. production). |
 | `SERVER_HOST` | No | `127.0.0.1` | HTTP server bind host. **Set to `0.0.0.0` when running in a container** (see Container Image below) or anywhere else the process needs to accept connections from outside its own host -- `127.0.0.1` only accepts local connections. |
 | `SERVER_PORT` | No | `3000` | HTTP server bind port |
 | `DEFAULT_USER_USERNAME` | No | `admin` | Default local user username |
