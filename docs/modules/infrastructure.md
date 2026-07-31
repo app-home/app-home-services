@@ -96,6 +96,7 @@ pub async fn build_rate_limiters(settings: &Settings)
 | `CORS_ALLOWED_ORIGINS` | (empty) | Comma-separated; empty = same-origin only |
 | `TRUSTED_PROXY_IPS` | (empty) | Comma-separated IPs for X-Forwarded-For trust |
 | `METRICS_ALLOWED_IPS` | (empty) | Comma-separated IPs allowed to reach `/metrics`; empty = no restriction; loopback always allowed |
+| `ENABLE_SWAGGER` | `false` | Serve `/swagger-ui` and `/api-docs/openapi.json`; disabled by default so the API surface is not exposed (see #86) |
 | `REDIS_URL` | (optional) | If set, uses `RedisRateLimiter`; unset = `MemoryRateLimiter` |
 
 ## Integration

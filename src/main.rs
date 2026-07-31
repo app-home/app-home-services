@@ -89,6 +89,16 @@ async fn main() {
         );
     }
 
+    if settings.enable_swagger {
+        tracing::info!(
+            "ENABLE_SWAGGER=true: serving Swagger UI at /swagger-ui and the OpenAPI spec at /api-docs/openapi.json"
+        );
+    } else {
+        tracing::info!(
+            "ENABLE_SWAGGER unset/false: /swagger-ui and /api-docs/openapi.json are disabled (no API surface exposure)"
+        );
+    }
+
     let user_repo = PostgresUserRepo::new(pool.clone());
     let session_repo = PostgresSessionRepo::new(pool.clone());
     let profile_repo = Arc::new(PostgresProfileRepo::new(pool.clone()));
@@ -200,7 +210,7 @@ async fn main() {
         .layer(axum::middleware::from_fn(metrics_ip_allowlist))
         .layer(Extension(metrics_guard_config));
 
-    let app = axum::Router::new()
+    let mut app = axum::Router::new()
         .route("/api/auth/login/password", post(login_password_handler))
         .route("/api/auth/login/google", post(login_google_handler))
         .route("/api/auth/logout", post(logout_handler))
@@ -225,10 +235,19 @@ async fn main() {
         // publicly. `/metrics` is still unauthenticated (no credentials required),
         // but is now additionally gated by an IP allowlist when METRICS_ALLOWED_IPS
         // is configured -- see crates/infrastructure/src/metrics_guard.rs and #83.
-        .merge(metrics_router)
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
-        .layer(cors)
-        .with_state(state);
+        .merge(metrics_router);
+
+    // Swagger UI and the OpenAPI spec are only registered when explicitly
+    // enabled (ENABLE_SWAGGER=true) -- see #86. Without the flag both routes
+    // return 404, so a publicly reachable instance exposes no API surface via
+    // docs. `ApiDoc::openapi()` is a generated static spec, so this conditional
+    // has no runtime cost beyond an already-generated constant.
+    if settings.enable_swagger {
+        app = app
+            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
+    }
+
+    let app = app.layer(cors).with_state(state);
 
     tracing::info!(address = %addr, "Listening");
 

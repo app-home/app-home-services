@@ -59,6 +59,13 @@ pub struct Settings {
     /// `SERVER_HOST=0.0.0.0` (e.g. containers) and want `/metrics` locked down
     /// without standing up a full reverse-proxy/auth setup. See #83.
     pub metrics_allowed_ips: Vec<IpAddr>,
+    /// When `true`, Swagger UI and the combined OpenAPI spec are served at
+    /// `/swagger-ui` and `/api-docs/openapi.json`. When `false` (the default),
+    /// neither route is registered at all, so an attacker cannot enumerate the
+    /// full API surface from a publicly reachable instance. Enable this only
+    /// where interactive API documentation is actually needed (e.g. local
+    /// development). See #86.
+    pub enable_swagger: bool,
 }
 
 impl fmt::Debug for Settings {
@@ -88,6 +95,7 @@ impl fmt::Debug for Settings {
             .field("db_max_lifetime_seconds", &self.db_max_lifetime_seconds)
             .field("db_require_ssl", &self.db_require_ssl)
             .field("metrics_allowed_ips", &self.metrics_allowed_ips)
+            .field("enable_swagger", &self.enable_swagger)
             .finish()
     }
 }
@@ -188,6 +196,10 @@ impl Settings {
             .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
 
+        let enable_swagger = std::env::var("ENABLE_SWAGGER")
+            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
         let database_url = {
             let raw = std::env::var("DATABASE_URL")
                 .map_err(|_| "DATABASE_URL must be set".to_string())?;
@@ -258,6 +270,7 @@ impl Settings {
                 .filter(|s| !s.is_empty())
                 .filter_map(|s| s.parse::<IpAddr>().ok())
                 .collect(),
+            enable_swagger,
         })
     }
 }

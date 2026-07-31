@@ -1,5 +1,7 @@
 // Integration test for the OpenAPI specification endpoint.
-// Requires a running server (cargo run) on localhost:3000.
+// Requires a running server (cargo run) on localhost:3000, started WITH the
+// docs enabled, since they are gated behind ENABLE_SWAGGER (see #86):
+//   ENABLE_SWAGGER=true cargo run
 // Run with: cargo test --test openapi_spec_served -- --ignored
 
 #[tokio::test]

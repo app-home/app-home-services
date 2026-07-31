@@ -60,6 +60,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated allowed origins; empty = same-origin only |
 | `TRUSTED_PROXY_IPS` | No | — | Comma-separated reverse proxy IPs trusted to set X-Forwarded-For/X-Real-IP; empty = never trusted |
 | `METRICS_ALLOWED_IPS` | No | — | Comma-separated IPs allowed to reach `GET /metrics` (e.g. your Prometheus server); empty = no restriction. Loopback is always allowed regardless. See Metrics & Alerting below. |
+| `ENABLE_SWAGGER` | No | `false` | Serve Swagger UI and the OpenAPI spec at `/swagger-ui` and `/api-docs/openapi.json`. Disabled by default so a publicly reachable instance exposes no API surface; set to `true` for local development. See API Documentation below. |
 
 ## API Endpoints
 
@@ -96,7 +97,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 
 ### API Documentation (OpenAPI / Swagger)
 
-The service exposes an auto-generated OpenAPI 3.x specification and an interactive Swagger UI:
+The service exposes an auto-generated OpenAPI 3.x specification and an interactive Swagger UI **only when `ENABLE_SWAGGER=true`** (default: disabled). Without the flag, both routes return `404`, so a publicly reachable instance does not leak its API surface. For local development, start with `ENABLE_SWAGGER=true`:
 
 | Resource | URL |
 | ---------- | ----- |
