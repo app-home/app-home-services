@@ -50,7 +50,7 @@ fn trusted_proxy_forwarded_for_is_used() {
     assert_eq!(
         resolved,
         ip(203, 0, 113, 7),
-        "the first entry in X-Forwarded-For is the original client when the peer is trusted"
+        "the rightmost entry in X-Forwarded-For that is not a trusted proxy is the original client when the peer is trusted"
     );
 }
 
