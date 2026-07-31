@@ -120,6 +120,8 @@ trusted_proxy_ips: Vec<IpAddr>
 | `DEFAULT_USER_EMAIL` | `admin@example.com` | Seed user email |
 | `GOOGLE_CLIENT_ID` | (empty) | Google OAuth client ID |
 | `JWT_SECRET` | **required** | Min 32 bytes; entropy validated |
+| `JWT_ISSUER` | `app-home-services` | `iss` claim minted/required on tokens (see #87); set a distinct value per environment so tokens can't be replayed cross-env |
+| `JWT_AUDIENCE` | `app-home-services` | `aud` claim minted/required on tokens (see #87); same cross-env replay rationale as `JWT_ISSUER` |
 | `ACCESS_TOKEN_EXPIRY_MINUTES` | `15` | Access token TTL |
 | `REFRESH_TOKEN_EXPIRY_DAYS` | `7` | Refresh token TTL |
 

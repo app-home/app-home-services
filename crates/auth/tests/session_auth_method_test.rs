@@ -17,11 +17,11 @@ use auth::application::ports::session_repository::SessionRepository;
 use auth::application::ports::user_repository::UserRepository;
 use auth::application::use_cases::logout::logout;
 use auth::application::use_cases::refresh_token::refresh_token;
+use auth::config::auth_settings::AuthSettings;
 use auth::domain::entities::session::{NewSession, Session};
 use auth::domain::entities::user::{NewUser, User};
 use auth::domain::entities::user_action::{NewUserAction, UserAction};
 use auth::domain::errors::AuthError;
-use auth::config::auth_settings::AuthSettings;
 
 type SharedSessions = std::sync::Arc<Mutex<HashMap<Uuid, Session>>>;
 
@@ -228,6 +228,8 @@ fn test_settings() -> AuthSettings {
         default_user_email: "admin@example.com".to_string(),
         google_client_id: String::new(),
         jwt_secret: "irrelevant".to_string(),
+        jwt_issuer: "app-home-services".to_string(),
+        jwt_audience: "app-home-services".to_string(),
         access_token_expiry_minutes: 15,
         refresh_token_expiry_days: 7,
     }
@@ -321,6 +323,8 @@ async fn refresh_carries_google_oauth_auth_method_forward_after_rotation() {
         claims: RefreshTokenClaims {
             sub: user_id,
             session_id,
+            iss: "app-home-services".to_string(),
+            aud: "app-home-services".to_string(),
             exp: 9_999_999_999,
             iat: 1,
         },

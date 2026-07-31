@@ -21,8 +21,8 @@ use std::net::TcpListener;
 use std::process::Command;
 use std::time::Duration;
 
-use app_home_services::shared::ports::RateLimiter;
 use app_home_services::infrastructure::rate_limiter::redis::RedisRateLimiter;
+use app_home_services::shared::ports::RateLimiter;
 
 /// Asks the OS for a free TCP port by binding to port 0 and reading back what it
 /// assigned, then immediately releasing it. There's an inherent small race between
@@ -79,7 +79,9 @@ impl RedisTestContainer {
     }
 
     fn redis_url(&self) -> String {
-        format!("redis://127.0.0.1:{}", self.port)
+        // `localhost`, not `127.0.0.1`: podman's port forwarding on Windows/WSL
+        // relays to the IPv6 loopback (::1), and `127.0.0.1` is unreachable there.
+        format!("redis://localhost:{}", self.port)
     }
 
     /// Polls with a real Redis connection attempt (not just a TCP port check) until

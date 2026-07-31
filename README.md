@@ -54,6 +54,8 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `JWT_SECRET` | Yes | — | HMAC secret for signing JWT tokens. Must be at least 32 bytes **and** have at least 8 unique characters (rejects both short and low-entropy secrets, e.g. `aaaa...aaaa`) -- generate one with `openssl rand -hex 64` |
 | `ACCESS_TOKEN_EXPIRY_MINUTES` | No | `15` | Access token lifetime in minutes |
 | `REFRESH_TOKEN_EXPIRY_DAYS` | No | `7` | Refresh token lifetime in days |
+| `JWT_ISSUER` | No | `app-home-services` | `iss` claim minted/required on tokens; set a distinct value per environment so tokens can't be replayed across environments (see #87) |
+| `JWT_AUDIENCE` | No | `app-home-services` | `aud` claim minted/required on tokens; same cross-environment replay rationale as `JWT_ISSUER` |
 | `RATE_LIMIT_MAX_ATTEMPTS` | No | `10` | Max failed login attempts per IP within the time window |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | `300` | Rate limit window in seconds (default: 5 min) |
 | `REDIS_URL` | No | — | Redis URL for shared rate-limit counters; empty = in-memory (single instance only) |
