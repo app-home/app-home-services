@@ -185,7 +185,7 @@ pub fn force_sslmode_verify_full(url: &str) -> Result<String, String> {
 impl Settings {
     pub fn from_env() -> Result<Self, String> {
         let db_require_ssl = std::env::var("DB_REQUIRE_SSL")
-            .map(|v| matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"))
+            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
             .unwrap_or(false);
 
         let database_url = {
