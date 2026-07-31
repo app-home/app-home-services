@@ -2341,6 +2341,7 @@ dependencies = [
  "serde",
  "thiserror",
  "tokio",
+ "url",
  "utoipa",
  "uuid",
 ]
