@@ -56,10 +56,10 @@ Shared request/response types for OpenAPI:
 
 **`AuthenticatedUser`** — JWT Bearer extractor (`FromRequestParts`):
 1. Extracts `Authorization: Bearer <token>` header
-2. Decodes via `DecodingKey` from `Extension<Arc<DecodingKey>>`
+2. Decodes via `Extension<Arc<JwtVerification>>` — `JwtVerification` holds the `DecodingKey` plus the service's `iss`/`aud` (`JWT_ISSUER`/`JWT_AUDIENCE`) and enforces both on every token (`Validation::new(HS256)` + `set_issuer`/`set_audience`); a token without or with foreign `iss`/`aud` is rejected (see #87)
 3. Returns `AuthenticatedUser { user_id: Uuid }` or `AuthRejection` (401)
 
-Used by profiles, admin, and auth/logout handlers.
+Used by profiles, admin, and auth/logout handlers. The same `JwtVerification::decode` is reused by `auth`'s `JwtServiceImpl` for access/refresh token validation.
 
 ## Networking (`net`)
 

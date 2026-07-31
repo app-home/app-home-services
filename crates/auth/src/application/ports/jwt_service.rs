@@ -11,6 +11,8 @@ pub struct TokenPair {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccessTokenClaims {
     pub sub: Uuid,
+    pub iss: String,
+    pub aud: String,
     pub exp: usize,
     pub iat: usize,
 }
@@ -19,6 +21,8 @@ pub struct AccessTokenClaims {
 pub struct RefreshTokenClaims {
     pub sub: Uuid,
     pub session_id: Uuid,
+    pub iss: String,
+    pub aud: String,
     pub exp: usize,
     pub iat: usize,
 }

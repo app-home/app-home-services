@@ -90,10 +90,7 @@ pub fn validate_default_user_password(password: &str) -> Result<(), String> {
     }
 
     let lowered = password.to_lowercase();
-    if KNOWN_WEAK_PASSWORDS
-        .iter()
-        .any(|weak| lowered == *weak)
-    {
+    if KNOWN_WEAK_PASSWORDS.iter().any(|weak| lowered == *weak) {
         return Err(
             "DEFAULT_USER_PASSWORD is a known weak/placeholder password and must not be used for the automatically-created admin account -- choose a unique password, e.g. `openssl rand -base64 18`"
                 .to_string(),
@@ -132,6 +129,14 @@ pub struct AuthSettings {
     pub default_user_email: String,
     pub google_client_id: String,
     pub jwt_secret: String,
+    /// `iss` claim minted and required on this service's JWTs. Env-configurable
+    /// (`JWT_ISSUER`) so each environment can reject tokens issued elsewhere.
+    /// See #87.
+    pub jwt_issuer: String,
+    /// `aud` claim minted and required on this service's JWTs. Env-configurable
+    /// (`JWT_AUDIENCE`) so a token for staging is never valid in production.
+    /// See #87.
+    pub jwt_audience: String,
     pub access_token_expiry_minutes: i64,
     pub refresh_token_expiry_days: i64,
 }
@@ -148,6 +153,8 @@ impl fmt::Debug for AuthSettings {
             .field("default_user_username", &self.default_user_username)
             .field("default_user_email", &self.default_user_email)
             .field("jwt_secret", &jwt_preview)
+            .field("jwt_issuer", &self.jwt_issuer)
+            .field("jwt_audience", &self.jwt_audience)
             .field("default_user_password", &"<redacted>")
             .field("google_client_id", &"<redacted>")
             .field(
@@ -189,6 +196,10 @@ impl AuthSettings {
                 }
                 secret
             },
+            jwt_issuer: std::env::var("JWT_ISSUER")
+                .unwrap_or_else(|_| "app-home-services".to_string()),
+            jwt_audience: std::env::var("JWT_AUDIENCE")
+                .unwrap_or_else(|_| "app-home-services".to_string()),
             access_token_expiry_minutes: std::env::var("ACCESS_TOKEN_EXPIRY_MINUTES")
                 .unwrap_or_else(|_| "15".to_string())
                 .parse()
@@ -213,7 +224,13 @@ mod tests {
 
     #[test]
     fn rejects_known_weak_passwords_case_insensitively() {
-        for weak in ["admin123", "Admin123", "ADMIN123", "password123", "changeme123"] {
+        for weak in [
+            "admin123",
+            "Admin123",
+            "ADMIN123",
+            "password123",
+            "changeme123",
+        ] {
             let result = validate_default_user_password(weak);
             assert!(
                 result.is_err(),

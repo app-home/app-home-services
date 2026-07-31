@@ -16,11 +16,11 @@ use auth::application::ports::jwt_service::{
 use auth::application::ports::session_repository::SessionRepository;
 use auth::application::ports::user_repository::UserRepository;
 use auth::application::use_cases::refresh_token::refresh_token;
+use auth::config::auth_settings::AuthSettings;
 use auth::domain::entities::session::{NewSession, Session};
 use auth::domain::entities::user::{NewUser, User};
 use auth::domain::entities::user_action::{NewUserAction, UserAction};
 use auth::domain::errors::AuthError;
-use auth::config::auth_settings::AuthSettings;
 
 type SharedSessions = std::sync::Arc<Mutex<HashMap<Uuid, Session>>>;
 
@@ -227,6 +227,8 @@ fn test_settings() -> AuthSettings {
         default_user_email: "admin@example.com".to_string(),
         google_client_id: String::new(),
         jwt_secret: "irrelevant".to_string(),
+        jwt_issuer: "app-home-services".to_string(),
+        jwt_audience: "app-home-services".to_string(),
         access_token_expiry_minutes: 15,
         refresh_token_expiry_days: 7,
     }
@@ -276,6 +278,8 @@ async fn reusing_invalidated_refresh_token_revokes_all_sessions_for_user() {
         claims: RefreshTokenClaims {
             sub: user_id,
             session_id: old_session_id,
+            iss: "app-home-services".to_string(),
+            aud: "app-home-services".to_string(),
             exp: 9_999_999_999,
             iat: 1,
         },
@@ -345,6 +349,8 @@ async fn legitimate_refresh_of_an_active_session_does_not_touch_other_sessions()
         claims: RefreshTokenClaims {
             sub: user_id,
             session_id: active_session_id,
+            iss: "app-home-services".to_string(),
+            aud: "app-home-services".to_string(),
             exp: 9_999_999_999,
             iat: 1,
         },

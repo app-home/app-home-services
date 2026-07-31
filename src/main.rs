@@ -8,7 +8,7 @@ use axum::{
     Extension,
     routing::{get, post, put},
 };
-use jsonwebtoken::DecodingKey;
+use shared::auth::JwtVerification;
 use utoipa::OpenApi;
 
 use admin::adapters::inbound::admin_routes::{
@@ -16,6 +16,7 @@ use admin::adapters::inbound::admin_routes::{
 };
 use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
 use app_home_services::api_doc::ApiDoc;
+use app_home_services::health::health_check;
 use app_home_services::infrastructure::config::Settings;
 use app_home_services::infrastructure::metrics_guard::{MetricsGuardConfig, metrics_ip_allowlist};
 use app_home_services::infrastructure::rate_limiter_setup::{
@@ -23,7 +24,6 @@ use app_home_services::infrastructure::rate_limiter_setup::{
 };
 use auth::adapters::audit_event_handler::AuditEventHandler;
 use auth::adapters::google_auth_provider::GoogleAuthProvider;
-use app_home_services::health::health_check;
 use auth::adapters::inbound::login_routes::login_password_handler;
 use auth::adapters::inbound::logout_routes::logout_handler;
 use auth::adapters::inbound::oauth_callback::login_google_handler;
@@ -108,8 +108,7 @@ async fn main() {
     // composition root wiring the concrete `auth`-owned implementation in. See
     // docs/adr/0001-modular-monolith.md for why this replaced admin's previous direct
     // SQL access to `users`.
-    let user_directory: Arc<dyn UserDirectory> =
-        Arc::new(PostgresUserDirectory::new(pool.clone()));
+    let user_directory: Arc<dyn UserDirectory> = Arc::new(PostgresUserDirectory::new(pool.clone()));
     let admin_repo = Arc::new(PostgresAdminRepo::new(pool.clone(), user_directory));
 
     let (event_bus, mut event_rx) = EventBus::new(256);
@@ -135,6 +134,8 @@ async fn main() {
         &auth_settings.jwt_secret,
         auth_settings.access_token_expiry_minutes,
         auth_settings.refresh_token_expiry_days,
+        &auth_settings.jwt_issuer,
+        &auth_settings.jwt_audience,
     );
 
     // See build_rate_limiters' docs for why REDIS_URL selects the backend, and why
@@ -147,7 +148,15 @@ async fn main() {
 
     spawn_rate_limiter_metrics_poller(rate_limiter_error_counters);
 
-    let decoding_key = Arc::new(DecodingKey::from_secret(auth_settings.jwt_secret.as_bytes()));
+    // Single JWT verification config (secret + iss/aud) shared by every
+    // protected route's `AuthenticatedUser` extractor. Enforcing a non-default
+    // issuer/audience rejects tokens minted in another environment that shares
+    // the same JWT_SECRET -- see #87.
+    let verification = Arc::new(JwtVerification::new(
+        &auth_settings.jwt_secret,
+        auth_settings.jwt_issuer.clone(),
+        auth_settings.jwt_audience.clone(),
+    ));
 
     if settings.server_host == "0.0.0.0" {
         tracing::warn!(
@@ -225,7 +234,7 @@ async fn main() {
         .route("/api/admin/users/{id}/role", put(update_user_role_handler))
         .layer(Extension(profile_repo))
         .layer(Extension(admin_repo))
-        .layer(Extension(decoding_key))
+        .layer(Extension(verification))
         // /api/health runs a real `SELECT 1` against the pool (see src/health.rs),
         // so it needs its own handle to it -- this clone is cheap (PgPool wraps an
         // Arc internally), not a second pool.
