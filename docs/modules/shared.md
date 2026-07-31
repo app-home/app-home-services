@@ -88,7 +88,9 @@ pub struct Settings {
     pub db_acquire_timeout_seconds: u64,
     pub db_idle_timeout_seconds: u64,
     pub db_max_lifetime_seconds: u64,
+    pub db_require_ssl: bool,
     pub metrics_allowed_ips: Vec<IpAddr>,
+    pub enable_swagger: bool,
 }
 ```
 
