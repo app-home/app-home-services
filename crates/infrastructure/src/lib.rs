@@ -1,3 +1,5 @@
+pub mod access_token_blacklist;
+pub mod access_token_blacklist_setup;
 pub mod config;
 pub mod database;
 pub mod metrics_guard;

@@ -42,6 +42,26 @@ fn test_validate_access_token_returns_claims() {
     assert_eq!(claims.sub, user_id);
     assert!(claims.exp > 0);
     assert!(claims.iat > 0);
+    assert_ne!(claims.jti, Uuid::nil(), "jti must be present");
+}
+
+#[test]
+fn test_access_tokens_have_unique_jti() {
+    let service = create_service();
+    let user_id = Uuid::now_v7();
+    let session_id = Uuid::now_v7();
+
+    let pair1 = service.generate_token_pair(user_id, session_id).unwrap();
+    let pair2 = service.generate_token_pair(user_id, session_id).unwrap();
+
+    let claims1 = service.validate_access_token(&pair1.access_token).unwrap();
+    let claims2 = service.validate_access_token(&pair2.access_token).unwrap();
+
+    assert_ne!(claims1.jti, Uuid::nil(), "jti must be present");
+    assert_ne!(
+        claims1.jti, claims2.jti,
+        "each access token must have its own jti so it can be revoked individually (see #88)"
+    );
 }
 
 #[test]

@@ -121,14 +121,14 @@ Successful login returns:
 }
 ```
 
-- `access_token`: Short-lived JWT (default 15 min) for authenticating subsequent requests.
+- `access_token`: Short-lived JWT (default 15 min) for authenticating subsequent requests. Each token carries a unique `jti` so it can be revoked individually (see Logout below).
 - `refresh_token`: Longer-lived JWT (default 7 days) used with `/api/auth/refresh` to obtain a new token pair.
 
 Failed logins return `401` with `{"error": "Invalid username or password"}`. Password verification always performs exactly one bcrypt check (a real one, or a dummy one of equal cost when the username doesn't exist or has no password set), so a nonexistent username can't be told apart from a wrong password by response time; a flat 50 ms delay is layered on top as additional defense-in-depth.
 
 ### Using the Auth Middleware
 
-Protected endpoints (like `/api/auth/logout`) require the `Authorization: Bearer <access_token>` header. The server validates the token's signature and expiry, then extracts the `user_id` from its claims.
+Protected endpoints (like `/api/auth/logout`) require the `Authorization: Bearer <access_token>` header. The server validates the token's signature, expiry, `iss`/`aud`, then checks the token's `jti` against the access-token revocation list before extracting the `user_id` from its claims.
 
 ### Logout
 
@@ -140,7 +140,7 @@ Protected endpoints (like `/api/auth/logout`) require the `Authorization: Bearer
 { "status": "logged_out" }
 ```
 
-The session is marked inactive (one-way transition). Subsequent refresh attempts with that session's tokens will be rejected.
+The session is marked inactive (one-way transition). Subsequent refresh attempts with that session's tokens will be rejected. The presented access token is additionally revoked (by its `jti`) for the rest of its lifetime, so a stolen access token stops validating as soon as the victim logs out (see #88).
 
 ### Token Refresh
 
@@ -416,6 +416,7 @@ An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limite
 - Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
 - `/api/health` actively checks database connectivity (`SELECT 1` with a 2s timeout, `503` on failure) rather than always reporting healthy -- see Database Connection Pool above
 - Session state transitions are one-way (active → inactive)
+- Access tokens are revocable: each carries a unique `jti`, logout blacklists the presented token until its natural expiry, and every authenticated request re-checks the revocation list (see #88). The blacklist is backed by Redis when `REDIS_URL` is set (shared across instances) and is in-memory otherwise (single instance only); if the backend is unavailable the check fails open, consistent with the rate limiter
 - Sessions record the `auth_method` used to create them ("password" / "google_oauth"), so logout/refresh audit entries reflect the real method instead of assuming one
 - Redis connections support password auth (`redis://:password@host:port`); TLS is not crate-native today -- see `docs/redis-security.md` for the documented decision and when to revisit it
 - `admin` never queries `auth`'s `users` table directly -- identity fields are read through the `UserDirectory` port, and role data lives in admin's own `user_roles` table (see `docs/modules/admin.md`)

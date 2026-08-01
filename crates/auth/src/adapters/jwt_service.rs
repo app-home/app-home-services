@@ -42,6 +42,7 @@ impl JwtService for JwtServiceImpl {
 
         let access_claims = AccessTokenClaims {
             sub: user_id,
+            jti: Uuid::now_v7(),
             iss: self.verification.issuer.clone(),
             aud: self.verification.audience.clone(),
             exp: now + (self.access_expiry_minutes as usize * 60),
