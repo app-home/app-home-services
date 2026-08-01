@@ -120,6 +120,7 @@ mod tests {
             db_require_ssl: false,
             metrics_allowed_ips: vec![],
             enable_swagger: false,
+            revocation_flush_interval_seconds: 5,
         }
     }
 

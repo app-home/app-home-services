@@ -66,6 +66,15 @@ pub struct Settings {
     /// where interactive API documentation is actually needed (e.g. local
     /// development). See #86.
     pub enable_swagger: bool,
+    /// How often the durable-revocation flush worker sweeps the
+    /// `access_token_revocation_outbox` table and retries journaled revocations
+    /// against Redis (see #140). Only relevant when the Redis-backed blacklist
+    /// is in use (`REDIS_URL` set); the in-memory backend can't fail, so it has
+    /// nothing to journal. Lower values shrink the window in which a token
+    /// logged out during a Redis outage still validates on *other* instances
+    /// (this instance rejects it immediately via an in-memory pending set), at
+    /// the cost of more frequent `SELECT`/`DELETE` sweeps.
+    pub revocation_flush_interval_seconds: u64,
 }
 
 impl fmt::Debug for Settings {
@@ -96,6 +105,10 @@ impl fmt::Debug for Settings {
             .field("db_require_ssl", &self.db_require_ssl)
             .field("metrics_allowed_ips", &self.metrics_allowed_ips)
             .field("enable_swagger", &self.enable_swagger)
+            .field(
+                "revocation_flush_interval_seconds",
+                &self.revocation_flush_interval_seconds,
+            )
             .finish()
     }
 }
@@ -112,10 +125,9 @@ impl fmt::Debug for Settings {
 /// recognizes. Lowercased so every caller can compare against a plain
 /// lowercase literal. See #142 review (CodeRabbit).
 fn extract_sslmode(url: &Url) -> Option<String> {
-    url.query_pairs()
-        .find_map(|(key, value)| {
-            (key == "sslmode" || key == "ssl-mode").then(|| value.to_lowercase())
-        })
+    url.query_pairs().find_map(|(key, value)| {
+        (key == "sslmode" || key == "ssl-mode").then(|| value.to_lowercase())
+    })
 }
 
 /// Whether the database host is on the same machine as this process
@@ -289,6 +301,12 @@ impl Settings {
                 .filter_map(|s| s.parse::<IpAddr>().ok())
                 .collect(),
             enable_swagger,
+            revocation_flush_interval_seconds: std::env::var("REVOCATION_FLUSH_INTERVAL_SECONDS")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .map_err(|_| {
+                    "REVOCATION_FLUSH_INTERVAL_SECONDS must be a valid number".to_string()
+                })?,
         })
     }
 }

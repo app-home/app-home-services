@@ -101,10 +101,12 @@ Access tokens are stateless JWTs, so signature/expiry validation alone can't sto
 |---------|-------------|
 | `MemoryAccessTokenBlacklist` | In-memory (`HashMap<Uuid, Instant>` + TTL), never errors; single-instance safe only |
 | `RedisAccessTokenBlacklist` | `SET acl:revoked:{jti} 1 EX {ttl}` / `EXISTS`; shared across instances; surfaces `BlacklistError` on Redis failures |
+| `DurableRevocationBlacklist` | Decorator over the Redis backend (see #140): a revoke that Redis rejects is journaled in Postgres (`access_token_revocation_outbox`, migration 009) and retried by a flush worker until it lands — a Redis outage delays but never silently drops a revocation |
 
 - The `AuthenticatedUser` extractor (`shared::auth`) checks `is_revoked(jti)` on every authenticated request and rejects revoked tokens with 401.
 - Backend selection happens in `build_access_token_blacklist` (`infrastructure`), mirroring `build_rate_limiters`: Redis when `REDIS_URL` is set, in-memory otherwise. Unlike the rate limiters, an unreachable `REDIS_URL` is NOT fatal at startup — it logs a warning and falls back to in-memory, since the check fails open anyway.
 - **Fail-open**: if the backend errors, the check treats the token as not revoked (availability over strictness), matching `RateLimiter`. Redis failures are logged and counted in `access_token_blacklist_redis_errors_total` (polled in `main.rs`).
+- **Durable retry (#140)**: on the Redis backend, a logout whose `revoke` Redis rejects is journaled in Postgres and the logout still succeeds; the flush worker (spawned in `main.rs`, interval = `REVOCATION_FLUSH_INTERVAL_SECONDS`, default 5s) retries it until it lands. While journaled, *this* instance rejects the token immediately (in-memory pending set); other instances reject it once the flush lands it in Redis — an inherent eventual-consistency window bounded by the flush interval. The only revocation that is never guaranteed is one issued while Redis AND Postgres are both down (the service is essentially degraded at that point anyway).
 - The blacklist entry's TTL is the token's remaining lifetime, so entries never outlive their token's natural expiry.
 
 ### AppState
@@ -146,7 +148,7 @@ In `src/main.rs`:
 1. `PostgresUserRepo`, `PostgresSessionRepo` created from pool
 2. `JwtServiceImpl`, `GoogleAuthProvider` from auth settings
 3. Rate limiters via `build_rate_limiters()` (Redis or memory)
-4. Access token blacklist via `build_access_token_blacklist()` (Redis or memory) — registered as an `Extension` so the extractor and logout handler share it
+4. Access token blacklist via `build_access_token_blacklist()` (Redis or memory) — registered as an `Extension` so the extractor and logout handler share it; on the Redis backend the durable-revocation flush worker is also spawned here
 5. `AppState::new(...)` bundles all dependencies
 6. Routes: `POST /api/auth/login/password`, `POST /api/auth/login/google`, `POST /api/auth/logout`, `POST /api/auth/refresh`
 7. `EventBus` receiver → `AuditEventHandler` (background task)
