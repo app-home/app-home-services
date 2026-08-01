@@ -70,6 +70,30 @@ pub async fn build_rate_limiters(settings: &Settings)
 - `REDIS_URL` set → `RedisRateLimiter` (startup error if Redis unreachable)
 - Returns `RateLimiterErrorCounters` — shared `AtomicU64` handles for Redis error polling
 
+### `access_token_blacklist`
+
+The access-token revocation list (see `docs/modules/auth.md` and #88). Backends:
+
+| Adapter | Description |
+|---------|-------------|
+| `memory::MemoryAccessTokenBlacklist` | In-memory `HashMap` + TTL, never errors, single-instance only |
+| `redis::RedisAccessTokenBlacklist` | `SET acl:revoked:{jti} 1 EX {ttl}` / `EXISTS` on Redis, shared across instances, fail-open on errors (250ms `REDIS_TIMEOUT` per call) |
+| `durable::DurableRevocationBlacklist` | Decorator over the Redis backend (see #140): when Redis rejects a revoke, the revocation is journaled in Postgres (`access_token_revocation_outbox`) and retried by a flush worker (`flush_pending`) until it lands. `is_revoked` checks an in-process pending set first, so this instance rejects a journaled-but-unflushed token immediately. |
+
+### `access_token_blacklist_setup`
+
+```rust
+pub async fn build_access_token_blacklist(settings: &Settings, pool: &PgPool)
+    -> (Arc<dyn AccessTokenBlacklist>, AccessTokenBlacklistErrorCounter,
+        Option<Arc<DurableRevocationBlacklist>>)
+```
+
+- `REDIS_URL` unset → `MemoryAccessTokenBlacklist` (no flusher, `None`)
+- `REDIS_URL` set → `DurableRevocationBlacklist` wrapping the Redis backend; the returned `Option<Arc<...>>` handle (when `Some`) lets `main.rs` spawn the flush worker. Unlike the rate limiters, an unreachable `REDIS_URL` is NOT a startup error: the check fails open, so it logs a warning and falls back to in-memory.
+- Returns `AccessTokenBlacklistErrorCounter` — shared `AtomicU64` handle for the Redis error poller.
+
+The flush worker (spawned in `main.rs`, every `REVOCATION_FLUSH_INTERVAL_SECONDS`, first tick immediate) publishes `access_token_revocation_outbox_pending` (gauge) after each sweep.
+
 ## External Docs
 
 - [Redis Security & TLS](../redis-security.md) — Redis password auth, TLS decision
@@ -98,6 +122,7 @@ pub async fn build_rate_limiters(settings: &Settings)
 | `METRICS_ALLOWED_IPS` | (empty) | Comma-separated IPs allowed to reach `/metrics`; empty = no restriction; loopback always allowed |
 | `ENABLE_SWAGGER` | `false` | Serve `/swagger-ui` and `/api-docs/openapi.json`; disabled by default so the API surface is not exposed (see #86) |
 | `REDIS_URL` | (optional) | If set, uses `RedisRateLimiter`; unset = `MemoryRateLimiter` |
+| `REVOCATION_FLUSH_INTERVAL_SECONDS` | `5` | Flush-worker sweep interval for the durable-revocation outbox (#140); only meaningful when `REDIS_URL` is set |
 
 ## Integration
 

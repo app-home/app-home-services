@@ -36,6 +36,25 @@ access_token_blacklist_redis_errors_total
 Same polling cadence (every 15 seconds) and same restart-resets-to-0 semantics as
 the rate limiter counter.
 
+### Durable-revocation outbox backlog
+
+Since #140, revocations that Redis rejects are journaled in Postgres
+(`access_token_revocation_outbox`) and retried by a background flush worker, so a
+Redis outage can delay -- but never silently drop -- a logout's revocation. The
+worker republishes the current backlog on every sweep (default every 5 seconds,
+see `REVOCATION_FLUSH_INTERVAL_SECONDS`) as:
+
+```text
+access_token_revocation_outbox_pending
+```
+
+Unlike the two error counters above, this is a **gauge** (it goes up and down as
+the backlog drains), and it is `0` by definition on the in-memory blacklist
+backend (`REDIS_URL` unset), which never journals. A sustained non-zero value
+means Redis has been down long enough that logged-out tokens are keeping their
+freshly-revoked status unenforced on *other* instances (this instance still
+rejects them immediately via an in-memory pending set).
+
 ## Scraping it
 
 `GET /metrics` on the service exposes this (and any other `metrics`-crate-recorded
@@ -72,15 +91,27 @@ groups:
         for: 1m
         labels:
           severity: warning
+      - alert: AccessTokenRevocationBacklogAccumulating
+        expr: access_token_revocation_outbox_pending > 0
+        for: 5m
+        labels:
+          severity: warning
 ```
 
 (Trimmed to the structural parts; see `prometheus/alerts.yml` for the full
 `annotations` on each alert.)
 
-Both start at the same deliberately low `> 0` threshold (see below); the blacklist
-one is arguably the more important of the two to notice, since a failing-open
-revocation list is a security degradation (revoked tokens keep working), while a
-failing-open rate limiter is only a brute-force defense weakening.
+Both error-counter alerts start at the same deliberately low `> 0` threshold (see
+below); the blacklist one is arguably the more important of the two to notice,
+since a failing-open revocation list is a security degradation (revoked tokens
+keep working), while a failing-open rate limiter is only a brute-force defense
+weakening.
+
+The third alert (`AccessTokenRevocationBacklogAccumulating`) is different in
+kind: it doesn't fire on a blip, it fires on a *sustained* `> 0` outbox backlog
+(5 minutes). Redis being down for a moment produces one or two failed revokes
+that flush within seconds and never trips it; a Redis outage long enough to leave
+the flush worker behind is what accumulates a backlog and fires it.
 
 ### Why the threshold starts at `> 0`
 

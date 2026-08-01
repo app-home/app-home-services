@@ -58,7 +58,8 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `JWT_AUDIENCE` | No | `app-home-services` | `aud` claim minted/required on tokens; same cross-environment replay rationale as `JWT_ISSUER` |
 | `RATE_LIMIT_MAX_ATTEMPTS` | No | `10` | Max failed login attempts per IP within the time window |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | `300` | Rate limit window in seconds (default: 5 min) |
-| `REDIS_URL` | No | — | Redis URL for shared rate-limit counters; empty = in-memory (single instance only) |
+| `REDIS_URL` | No | — | Redis URL for shared rate-limit counters and the access-token revocation list; empty = in-memory (single instance only) |
+| `REVOCATION_FLUSH_INTERVAL_SECONDS` | No | `5` | How often (seconds) the durable-revocation flush worker retries journaled revocations against Redis (see #140); only meaningful when `REDIS_URL` is set |
 | `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated allowed origins; empty = same-origin only |
 | `TRUSTED_PROXY_IPS` | No | — | Comma-separated reverse proxy IPs trusted to set X-Forwarded-For/X-Real-IP; empty = never trusted |
 | `METRICS_ALLOWED_IPS` | No | — | Comma-separated IPs allowed to reach `GET /metrics` (e.g. your Prometheus server); empty = no restriction. Loopback is always allowed regardless. See Metrics & Alerting below. |
@@ -370,6 +371,7 @@ This does not require credentials, so it should still only be reachable from ins
 | Metric | Type | Labels | Description |
 | -------- | ------ | -------- | ------------- |
 | `rate_limiter_redis_errors_total` | Counter | `scope="login"` \| `scope="refresh"` | Cumulative count of Redis errors encountered by the rate limiter (i.e. every time it failed open and allowed a request through instead of enforcing the limit). Absent/zero when running on the in-memory backend (`REDIS_URL` unset), since that backend has no equivalent failure mode. Resets to 0 on process restart. Polled from the rate limiter's internal counter and republished every 15 seconds. |
+| `access_token_revocation_outbox_pending` | Gauge | — | Number of journaled access-token revocations not yet flushed to Redis (rows currently in `access_token_revocation_outbox`). Only meaningful on the Redis blacklist backend (`REDIS_URL` set); the in-memory backend never journals, so this stays at 0. Republished by the durable-revocation flush worker on every sweep (see `REVOCATION_FLUSH_INTERVAL_SECONDS`). Sustained non-zero is a sign Redis has been down long enough to accumulate a backlog -- see `docs/alerting.md`. |
 
 ### Scraping
 
@@ -399,6 +401,8 @@ METRICS_ALLOWED_IPS=10.0.0.5,10.0.0.6
 
 An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limiter_redis_errors_total` increases at all within a 5-minute window. The threshold starts deliberately low (`> 0`) since there's no baseline yet for what "normal" transient Redis noise looks like in this deployment -- see [`docs/alerting.md`](docs/alerting.md) for the full reasoning and a concrete process for raising the threshold once you have a couple of weeks of real data.
 
+A second rule fires when the durable-revocation backlog (`access_token_revocation_outbox_pending`) stays above 0 for 5 minutes, which means journaled revocations are accumulating because Redis has been down -- see [`docs/alerting.md`](docs/alerting.md).
+
 ## Security
 
 - Passwords hashed with bcrypt (never stored in plaintext)
@@ -416,7 +420,7 @@ An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limite
 - Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
 - `/api/health` actively checks database connectivity (`SELECT 1` with a 2s timeout, `503` on failure) rather than always reporting healthy -- see Database Connection Pool above
 - Session state transitions are one-way (active → inactive)
-- Access tokens are revocable: each carries a unique `jti`, logout blacklists the presented token until its natural expiry, and every authenticated request re-checks the revocation list (see #88). The blacklist is backed by Redis when `REDIS_URL` is set (shared across instances) and is in-memory otherwise (single instance only); if the backend is unavailable the check fails open, consistent with the rate limiter
+- Access tokens are revocable: each carries a unique `jti`, logout blacklists the presented token until its natural expiry, and every authenticated request re-checks the revocation list (see #88). The blacklist is backed by Redis when `REDIS_URL` is set (shared across instances) and is in-memory otherwise (single instance only); if the backend is unavailable the check fails open, consistent with the rate limiter. Revocation is *durable* on the Redis backend (see #140): if Redis rejects a revoke at logout time, it's journaled in Postgres and a background worker retries it until it lands, so a Redis outage can delay -- but never silently drop -- a revocation
 - Sessions record the `auth_method` used to create them ("password" / "google_oauth"), so logout/refresh audit entries reflect the real method instead of assuming one
 - Redis connections support password auth (`redis://:password@host:port`); TLS is not crate-native today -- see `docs/redis-security.md` for the documented decision and when to revisit it
 - `admin` never queries `auth`'s `users` table directly -- identity fields are read through the `UserDirectory` port, and role data lives in admin's own `user_roles` table (see `docs/modules/admin.md`)

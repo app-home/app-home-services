@@ -97,6 +97,7 @@ pub struct Settings {
     pub db_require_ssl: bool,
     pub metrics_allowed_ips: Vec<IpAddr>,
     pub enable_swagger: bool,
+    pub revocation_flush_interval_seconds: u64,
 }
 ```
 
