@@ -15,6 +15,7 @@ use admin::adapters::inbound::admin_routes::{
     get_user_handler, list_users_handler, update_user_role_handler,
 };
 use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
+use admin::application::ports::admin_repository::AdminRepository;
 use app_home_services::api_doc::ApiDoc;
 use app_home_services::health::health_check;
 use app_home_services::infrastructure::access_token_blacklist_setup::{
@@ -38,6 +39,7 @@ use auth::adapters::postgres_user_repo::PostgresUserRepo;
 use auth::config::auth_settings::AuthSettings;
 use profiles::adapters::inbound::profile_routes::{get_profile_handler, update_profile_handler};
 use profiles::adapters::outbound::postgres_profile_repo::PostgresProfileRepo;
+use profiles::application::ports::profile_repository::ProfileRepository;
 use shared::event_bus::EventBus;
 use shared::user_directory::UserDirectory;
 use utoipa_swagger_ui::SwaggerUi;
@@ -104,7 +106,11 @@ async fn main() {
 
     let user_repo = PostgresUserRepo::new(pool.clone());
     let session_repo = PostgresSessionRepo::new(pool.clone());
-    let profile_repo = Arc::new(PostgresProfileRepo::new(pool.clone()));
+    // Coerced to `Arc<dyn ...>` so the Extension key matches what the profile and
+    // admin handlers extract -- `Extension<Arc<ConcreteRepo>>` would be a
+    // different key than `Extension<Arc<dyn Repo>>` and the routes would 500 with
+    // "Missing request extension".
+    let profile_repo: Arc<dyn ProfileRepository> = Arc::new(PostgresProfileRepo::new(pool.clone()));
 
     // `admin` depends only on the `UserDirectory` port (defined in `shared`) for user
     // identity, not on the `auth` crate or its `users` table directly -- this is the
@@ -112,7 +118,8 @@ async fn main() {
     // docs/adr/0001-modular-monolith.md for why this replaced admin's previous direct
     // SQL access to `users`.
     let user_directory: Arc<dyn UserDirectory> = Arc::new(PostgresUserDirectory::new(pool.clone()));
-    let admin_repo = Arc::new(PostgresAdminRepo::new(pool.clone(), user_directory));
+    let admin_repo: Arc<dyn AdminRepository> =
+        Arc::new(PostgresAdminRepo::new(pool.clone(), user_directory));
 
     let (event_bus, mut event_rx) = EventBus::new(256);
     let audit_handler = AuditEventHandler::new(pool.clone());
