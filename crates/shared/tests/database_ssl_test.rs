@@ -9,7 +9,8 @@
 // `crates/auth/tests/jwt_secret_strength_test.rs`).
 
 use shared::config::settings::{
-    database_ssl_warning, force_sslmode_verify_full, validate_database_ssl,
+    database_ssl_warning, force_sslmode_verify_full, parse_required_ssl_flag,
+    validate_database_ssl,
 };
 
 // -- validate_database_ssl ----------------------------------------------------
@@ -75,6 +76,29 @@ fn rejects_ssl_dash_mode_disable_alias_against_a_remote_host() {
     assert!(
         result.is_err(),
         "ssl-mode=disable (the sqlx alias) against a remote host must be a fatal startup error, got {result:?}"
+    );
+}
+
+#[test]
+fn duplicate_sslmode_resolves_to_the_last_occurrence() {
+    // sqlx/libpq resolve a repeated query key to its LAST value, not its first.
+    // A URL that looks safe at a glance (first sslmode=require) but actually
+    // ends in sslmode=disable must still be rejected against a remote host.
+    let result = validate_database_ssl(
+        "postgresql://user:pass@db.internal:5432/apphome?sslmode=require&sslmode=disable",
+    );
+
+    assert!(
+        result.is_err(),
+        "a URL whose LAST sslmode value is disable must be rejected even if an earlier one wasn't, got {result:?}"
+    );
+
+    let inverse = validate_database_ssl(
+        "postgresql://user:pass@db.internal:5432/apphome?sslmode=disable&sslmode=verify-full",
+    );
+    assert!(
+        inverse.is_ok(),
+        "a URL whose LAST sslmode value is verify-full must be accepted even if an earlier one was disable, got {inverse:?}"
     );
 }
 
@@ -306,5 +330,43 @@ fn rejects_a_malformed_url_when_forcing_ssl() {
     assert!(
         result.is_err(),
         "an unparseable DATABASE_URL should be rejected with a clear message, got {result:?}"
+    );
+}
+
+// -- parse_required_ssl_flag --------------------------------------------------
+
+#[test]
+fn ssl_flag_defaults_to_false_when_unset() {
+    assert_eq!(parse_required_ssl_flag(None), Ok(false));
+}
+
+#[test]
+fn ssl_flag_accepts_recognized_true_and_false_forms() {
+    for form in ["1", "true", "TRUE", "True", "yes", " true "] {
+        assert_eq!(
+            parse_required_ssl_flag(Some(form.to_string())),
+            Ok(true),
+            "expected {form:?} to parse as true"
+        );
+    }
+    for form in ["0", "false", "FALSE", "no", ""] {
+        assert_eq!(
+            parse_required_ssl_flag(Some(form.to_string())),
+            Ok(false),
+            "expected {form:?} to parse as false"
+        );
+    }
+}
+
+#[test]
+fn ssl_flag_rejects_an_unrecognized_value_instead_of_defaulting_to_false() {
+    // A typo like "ture" previously fell through to unwrap_or(false), silently
+    // disabling TLS enforcement instead of failing the startup loudly. See
+    // #142 review (CodeRabbit).
+    let result = parse_required_ssl_flag(Some("ture".to_string()));
+
+    assert!(
+        result.is_err(),
+        "an unrecognized DB_REQUIRE_SSL value must be a startup error, not a silent false, got {result:?}"
     );
 }
