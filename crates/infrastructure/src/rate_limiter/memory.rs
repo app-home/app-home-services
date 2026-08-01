@@ -7,6 +7,17 @@ use tokio::sync::Mutex;
 
 use shared::ports::RateLimiter;
 
+/// Hard cap on the number of distinct IPs tracked at once.
+///
+/// `clean_expired` only removes entries whose window has already elapsed, which
+/// does not help during an active flood: an attacker spraying requests across
+/// many distinct IPs within a single window keeps every entry "current" (not
+/// expired), so the map can grow unbounded for the duration of the attack even
+/// with cleanup running on every call (see #96). This cap bounds worst-case
+/// memory (~40 bytes/entry, so 100_000 entries is a few MB) by evicting the
+/// single oldest entry whenever a new IP would exceed it.
+const MAX_ENTRIES: usize = 100_000;
+
 #[derive(Debug, Clone)]
 struct RateLimitEntry {
     attempts: u32,
@@ -42,6 +53,24 @@ impl MemoryRateLimiter {
         let window = self.window_duration;
         entries.retain(|_, entry| now.duration_since(entry.window_start) < window);
     }
+
+    /// Evicts the single oldest entry (smallest `window_start`) when the map is
+    /// at capacity, so tracking a brand-new IP never grows it past
+    /// `MAX_ENTRIES`. Called right before inserting a not-yet-tracked IP; a
+    /// no-op once cleanup (or normal traffic) has room again. O(n) worst case,
+    /// but only runs at capacity -- not on every request.
+    fn evict_oldest_if_full(&self, entries: &mut HashMap<IpAddr, RateLimitEntry>) {
+        if entries.len() < MAX_ENTRIES {
+            return;
+        }
+        if let Some(&oldest_ip) = entries
+            .iter()
+            .min_by_key(|(_, entry)| entry.window_start)
+            .map(|(ip, _)| ip)
+        {
+            entries.remove(&oldest_ip);
+        }
+    }
 }
 
 #[async_trait]
@@ -65,7 +94,12 @@ impl RateLimiter for MemoryRateLimiter {
 
     async fn record_attempt(&self, ip: IpAddr) {
         let mut entries = self.entries.lock().await;
+        self.clean_expired(&mut entries);
         let now = Instant::now();
+
+        if !entries.contains_key(&ip) {
+            self.evict_oldest_if_full(&mut entries);
+        }
 
         let entry = entries.entry(ip).or_insert(RateLimitEntry {
             attempts: 0,
@@ -85,6 +119,10 @@ impl RateLimiter for MemoryRateLimiter {
         let mut entries = self.entries.lock().await;
         self.clean_expired(&mut entries);
         let now = Instant::now();
+
+        if !entries.contains_key(&ip) {
+            self.evict_oldest_if_full(&mut entries);
+        }
 
         let entry = entries.entry(ip).or_insert(RateLimitEntry {
             attempts: 0,
