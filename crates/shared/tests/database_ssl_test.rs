@@ -114,6 +114,20 @@ fn warns_when_remote_host_has_sslmode_prefer() {
 }
 
 #[test]
+fn warns_when_remote_host_has_sslmode_allow() {
+    // `allow` tries plaintext first and only upgrades to TLS if the server
+    // demands it -- same plaintext-capable outcome as `prefer`, just with the
+    // attempt order reversed, so it must warn too. See #142 review.
+    let warning =
+        database_ssl_warning("postgresql://user:pass@db.internal:5432/apphome?sslmode=allow");
+
+    assert!(
+        warning.is_some(),
+        "sslmode=allow against a remote host must produce a warning"
+    );
+}
+
+#[test]
 fn does_not_warn_for_verified_tls_or_loopback_hosts() {
     for url in [
         "postgresql://user:pass@db.internal:5432/apphome?sslmode=verify-full",
