@@ -33,6 +33,17 @@ impl MemoryAccessTokenBlacklist {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Number of entries currently stored, including any not yet pruned by the
+    /// opportunistic sweep in `revoke`. Not part of the `AccessTokenBlacklist`
+    /// port -- exists so integration tests can assert that sweep actually
+    /// bounds growth instead of just trusting the implementation (see #135 and
+    /// the CodeRabbit review on PR #142). `entries` itself stays private;
+    /// nothing outside this module can inspect *which* tokens are revoked
+    /// through this method, only how many.
+    pub async fn entry_count(&self) -> usize {
+        self.entries.lock().await.len()
+    }
 }
 
 #[async_trait]
@@ -71,16 +82,5 @@ impl AccessTokenBlacklist for MemoryAccessTokenBlacklist {
                 Ok(false)
             }
         }
-    }
-}
-
-#[cfg(test)]
-impl MemoryAccessTokenBlacklist {
-    /// Test-only: number of entries currently stored, including any not yet
-    /// pruned. Used to assert that the opportunistic sweep in `revoke` actually
-    /// bounds growth instead of just trusting the implementation (see #135 and
-    /// the CodeRabbit review on PR #142).
-    pub async fn entry_count(&self) -> usize {
-        self.entries.lock().await.len()
     }
 }
