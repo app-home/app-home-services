@@ -10,7 +10,7 @@ requests because Redis is briefly unavailable. Each occurrence is counted in-pro
 (see `RedisRateLimiter::redis_error_count` / `error_counter_handle`) and, as of #36,
 published as a Prometheus metric:
 
-```
+```text
 rate_limiter_redis_errors_total{scope="login"}
 rate_limiter_redis_errors_total{scope="refresh"}
 ```
@@ -29,7 +29,7 @@ limiter). Each occurrence is counted in-process (see
 `RedisAccessTokenBlacklist::redis_error_count` / `error_counter_handle`) and
 published by `main.rs` as:
 
-```
+```text
 access_token_blacklist_redis_errors_total
 ```
 
