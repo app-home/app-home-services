@@ -100,12 +100,22 @@ impl fmt::Debug for Settings {
     }
 }
 
-/// `sslmode` query parameter from a `postgres://`-style `DATABASE_URL`, or
-/// `None` when the URL omits it (sqlx then defaults to `prefer`, which tries
-/// TLS but silently falls back to plaintext).
+/// Canonical `sslmode` value from a `postgres://`-style `DATABASE_URL`, or
+/// `None` when the URL specifies neither (sqlx then defaults to `prefer`,
+/// which tries TLS but silently falls back to plaintext).
+///
+/// sqlx accepts both the `sslmode` key and the `ssl-mode` alias, and treats the
+/// value case-insensitively (`DISABLE`, `Disable`, and `disable` are all the
+/// same mode). This must match that exactly: a raw, case-sensitive, single-key
+/// comparison would let `sslmode=DISABLE` sail past `validate_database_ssl`, or
+/// `ssl-mode=disable` bypass it entirely by using the alias sqlx itself
+/// recognizes. Lowercased so every caller can compare against a plain
+/// lowercase literal. See #142 review (CodeRabbit).
 fn extract_sslmode(url: &Url) -> Option<String> {
     url.query_pairs()
-        .find_map(|(key, value)| (key == "sslmode").then(|| value.into_owned()))
+        .find_map(|(key, value)| {
+            (key == "sslmode" || key == "ssl-mode").then(|| value.to_lowercase())
+        })
 }
 
 /// Whether the database host is on the same machine as this process
@@ -169,16 +179,17 @@ pub fn database_ssl_warning(url: &str) -> Option<String> {
 }
 
 /// Rewrites a `DATABASE_URL` so it always connects with `sslmode=verify-full`,
-/// replacing any existing `sslmode` value (including `disable`). Used when
-/// `DB_REQUIRE_SSL=true` to make the "always encrypt and verify" requirement
-/// effective regardless of what the connection string itself says. See #85.
+/// replacing any existing `sslmode`/`ssl-mode` value (including `disable`, in
+/// either key spelling or casing). Used when `DB_REQUIRE_SSL=true` to make the
+/// "always encrypt and verify" requirement effective regardless of what the
+/// connection string itself says. See #85.
 pub fn force_sslmode_verify_full(url: &str) -> Result<String, String> {
     let mut parsed =
         Url::parse(url).map_err(|e| format!("DATABASE_URL is not a valid URL: {e}"))?;
 
     let remaining: Vec<(String, String)> = parsed
         .query_pairs()
-        .filter(|(key, _)| key != "sslmode")
+        .filter(|(key, _)| key != "sslmode" && key != "ssl-mode")
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect();
 
