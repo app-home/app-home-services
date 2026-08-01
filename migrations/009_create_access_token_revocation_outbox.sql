@@ -25,7 +25,17 @@ CREATE TABLE IF NOT EXISTS access_token_revocation_outbox (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- FIFO sweep order for the flush worker, and a way to cheaply find rows whose
--- `created_at + ttl_secs` has already elapsed without scanning the whole table.
+-- FIFO sweep order for the flush worker's SELECT ... ORDER BY created_at LIMIT.
+-- Does NOT help the expiry DELETE below -- that predicate depends on ttl_secs
+-- (a column, not a constant), which a plain created_at index can't serve.
 CREATE INDEX IF NOT EXISTS access_token_revocation_outbox_created_at_idx
     ON access_token_revocation_outbox (created_at);
+
+-- Expression index matching the expiry DELETE's predicate
+-- (`created_at + ttl_secs * INTERVAL '1 second' <= NOW()`) in
+-- DurableRevocationBlacklist::flush_pending, so that sweep can use an index
+-- scan instead of a sequential scan once the table grows past trivial size.
+-- The expression is immutable (no `NOW()`/mutable functions inside it), so
+-- Postgres allows indexing it directly.
+CREATE INDEX IF NOT EXISTS access_token_revocation_outbox_expires_at_idx
+    ON access_token_revocation_outbox ((created_at + (ttl_secs * INTERVAL '1 second')));
