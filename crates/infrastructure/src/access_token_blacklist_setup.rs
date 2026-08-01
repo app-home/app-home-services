@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicU64;
 
 use shared::ports::AccessTokenBlacklist;
 
+use crate::access_token_blacklist::durable::DurableRevocationBlacklist;
 use crate::access_token_blacklist::memory::MemoryAccessTokenBlacklist;
 use crate::access_token_blacklist::redis::RedisAccessTokenBlacklist;
 use crate::config::Settings;
@@ -24,6 +25,14 @@ pub struct AccessTokenBlacklistErrorCounter {
 /// shared across instances), otherwise in-memory (single instance only -- see
 /// `MemoryAccessTokenBlacklist`'s docs).
 ///
+/// On the Redis backend, the returned `Arc<dyn AccessTokenBlacklist>` is a
+/// `DurableRevocationBlacklist` wrapping the Redis client: revocations that
+/// Redis rejects are journaled in Postgres (migration 009) so a Redis outage
+/// delays -- but never silently drops -- a logout's revocation (see #140). The
+/// `Option<Arc<DurableRevocationBlacklist>>` handle to that same instance lets
+/// `main` spawn the flush worker that retries the journal; it is `None` on the
+/// in-memory backend, which cannot fail and therefore never journals.
+///
 /// Unlike `build_rate_limiters`, a *set* but unreachable `REDIS_URL` is NOT a
 /// fatal startup error here: the blacklist check fails open by design, so the
 /// service logs a warning and falls back to in-memory rather than refusing to
@@ -42,18 +51,27 @@ pub struct AccessTokenBlacklistErrorCounter {
 /// `Arc<dyn AccessTokenBlacklist>`.
 pub async fn build_access_token_blacklist(
     settings: &Settings,
+    pool: &sqlx::PgPool,
 ) -> (
     Arc<dyn AccessTokenBlacklist>,
     AccessTokenBlacklistErrorCounter,
+    Option<Arc<DurableRevocationBlacklist>>,
 ) {
     match &settings.redis_url {
         Some(redis_url) => match RedisAccessTokenBlacklist::connect(redis_url).await {
-            Ok(blacklist) => {
+            Ok(redis_blacklist) => {
                 let error_counter = AccessTokenBlacklistErrorCounter {
-                    redis: Some(blacklist.error_counter_handle()),
+                    redis: Some(redis_blacklist.error_counter_handle()),
                 };
-                tracing::info!("Access token revocation backend: Redis (shared across instances)");
-                (Arc::new(blacklist), error_counter)
+                tracing::info!(
+                    "Access token revocation backend: Redis (shared across instances, with durable retry via Postgres journal -- see #140)"
+                );
+                let durable = Arc::new(DurableRevocationBlacklist::new(
+                    Arc::new(redis_blacklist),
+                    pool.clone(),
+                ));
+                let flusher = Arc::clone(&durable);
+                (durable, error_counter, Some(flusher))
             }
             Err(e) => {
                 tracing::warn!(
@@ -63,6 +81,7 @@ pub async fn build_access_token_blacklist(
                 (
                     Arc::new(MemoryAccessTokenBlacklist::new()),
                     AccessTokenBlacklistErrorCounter::default(),
+                    None,
                 )
             }
         },
@@ -73,6 +92,7 @@ pub async fn build_access_token_blacklist(
             (
                 Arc::new(MemoryAccessTokenBlacklist::new()),
                 AccessTokenBlacklistErrorCounter::default(),
+                None,
             )
         }
     }

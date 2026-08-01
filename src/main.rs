@@ -18,6 +18,7 @@ use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
 use admin::application::ports::admin_repository::AdminRepository;
 use app_home_services::api_doc::ApiDoc;
 use app_home_services::health::health_check;
+use app_home_services::infrastructure::access_token_blacklist::durable::DurableRevocationBlacklist;
 use app_home_services::infrastructure::access_token_blacklist_setup::{
     AccessTokenBlacklistErrorCounter, build_access_token_blacklist,
 };
@@ -161,11 +162,16 @@ async fn main() {
     // See build_access_token_blacklist's docs for why REDIS_URL selects the
     // backend, and why (unlike the rate limiters) an unreachable Redis falls back
     // to in-memory at startup rather than aborting -- the blacklist check fails
-    // open anyway (#88).
-    let (access_token_blacklist, blacklist_error_counter) =
-        build_access_token_blacklist(&settings).await;
+    // open anyway (#88). On the Redis backend, revocations that Redis rejects are
+    // journaled in Postgres and flushed by a background worker (see #140).
+    let (access_token_blacklist, blacklist_error_counter, revocation_flusher) =
+        build_access_token_blacklist(&settings, &pool).await;
 
     spawn_access_token_blacklist_metrics_poller(blacklist_error_counter);
+
+    if let Some(flusher) = revocation_flusher {
+        spawn_access_token_revocation_flusher(flusher, settings.revocation_flush_interval_seconds);
+    }
 
     // Single JWT verification config (secret + iss/aud) shared by every
     // protected route's `AuthenticatedUser` extractor. Enforcing a non-default
@@ -350,6 +356,45 @@ fn spawn_access_token_blacklist_metrics_poller(counter: AccessTokenBlacklistErro
             if let Some(counter) = &counter.redis {
                 let value = counter.load(Ordering::Relaxed);
                 metrics::counter!("access_token_blacklist_redis_errors_total").absolute(value);
+            }
+        }
+    });
+}
+
+/// Spawns the durable-revocation flush worker: retries every journaled access
+/// token revocation (`access_token_revocation_outbox`, see #140 and
+/// `DurableRevocationBlacklist`) against Redis on an interval, publishing the
+/// current backlog as `access_token_revocation_outbox_pending` after each sweep.
+///
+/// The first `tokio::time::interval` tick fires immediately, so any backlog that
+/// accumulated while the process was down is retried right at startup, not after
+/// the first full interval. `interval_secs` comes from
+/// `REVOCATION_FLUSH_INTERVAL_SECONDS` and is clamped to a minimum of 1 second
+/// (`interval` panics on a zero duration; a misconfigured 0 would otherwise kill
+/// the task -- and this worker, not the request path, is the right thing to
+/// protect here).
+fn spawn_access_token_revocation_flusher(
+    flusher: Arc<DurableRevocationBlacklist>,
+    interval_secs: u64,
+) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
+        loop {
+            interval.tick().await;
+
+            match flusher.flush_pending().await {
+                Ok(remaining) => {
+                    metrics::gauge!("access_token_revocation_outbox_pending").set(remaining as f64);
+                }
+                Err(e) => {
+                    // Postgres was unreachable for the sweep itself. The gauge is
+                    // left at its last known value rather than reset to 0, so a
+                    // genuine backlog isn't hidden by a failed sweep.
+                    tracing::error!(
+                        error = %e,
+                        "Access token revocation outbox flush failed (will retry on the next sweep)"
+                    );
+                }
             }
         }
     });
