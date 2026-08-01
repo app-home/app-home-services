@@ -82,28 +82,43 @@ async fn test_logout_revokes_presented_access_token() {
     let access_token = login_body["access_token"].as_str().unwrap();
     let refresh_token = login_body["refresh_token"].as_str().unwrap();
 
-    // Sanity check: the access token works before logout.
+    // Sanity check: the access token is accepted before logout. `/api/profile`
+    // returns 200 or 404 (profile may not exist yet), but in both cases it is NOT
+    // 401 -- the token validates. A 500 here would mean the server misconfigures
+    // the profile repo extension (regression guard for the "Missing request
+    // extension" bug fixed in main.rs).
     let before = client
         .get("http://localhost:3000/api/profile")
         .header("Authorization", format!("Bearer {}", access_token))
         .send()
         .await
         .expect("Failed to hit /api/profile before logout");
-    assert_eq!(before.status(), 200);
+    assert_ne!(before.status(), 401);
+    assert_ne!(
+        before.status(),
+        500,
+        "profile route should not 500 with a valid token"
+    );
 
     // The logout request must name the session to close; decode it from the refresh
     // token (signed with the same JWT_SECRET as the rest of the service).
     let secret = std::env::var("JWT_SECRET").expect("JWT_SECRET is required");
-    let claims: serde_json::Value = jsonwebtoken::decode_header(refresh_token)
-        .and_then(|_| {
-            jsonwebtoken::decode::<serde_json::Value>(
-                refresh_token,
-                &jsonwebtoken::DecodingKey::from_secret(secret.as_bytes()),
-                &jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256),
-            )
-            .map(|data| data.claims)
-        })
-        .expect("failed to decode refresh token");
+    // The server validates its JWTs against the issuer/audience from
+    // JWT_ISSUER/JWT_AUDIENCE (default "app-home-services", see #87). Replicate
+    // that here, otherwise jsonwebtoken v10 rejects the token's `aud` claim with
+    // InvalidAudience.
+    let issuer = std::env::var("JWT_ISSUER").unwrap_or_else(|_| "app-home-services".to_string());
+    let audience = std::env::var("JWT_AUDIENCE").unwrap_or_else(|_| "app-home-services".to_string());
+    let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
+    validation.set_issuer(&[&issuer]);
+    validation.set_audience(&[&audience]);
+    let claims: serde_json::Value = jsonwebtoken::decode(
+        refresh_token,
+        &jsonwebtoken::DecodingKey::from_secret(secret.as_bytes()),
+        &validation,
+    )
+    .map(|data| data.claims)
+    .expect("failed to decode refresh token");
     let session_id = claims["session_id"]
         .as_str()
         .expect("refresh token has no session_id");
