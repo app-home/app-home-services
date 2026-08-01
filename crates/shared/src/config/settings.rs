@@ -117,17 +117,20 @@ impl fmt::Debug for Settings {
 /// `None` when the URL specifies neither (sqlx then defaults to `prefer`,
 /// which tries TLS but silently falls back to plaintext).
 ///
-/// sqlx accepts both the `sslmode` key and the `ssl-mode` alias, and treats the
+/// sqlx accepts both the `sslmode` key and the `ssl-mode` alias, treats the
 /// value case-insensitively (`DISABLE`, `Disable`, and `disable` are all the
-/// same mode). This must match that exactly: a raw, case-sensitive, single-key
-/// comparison would let `sslmode=DISABLE` sail past `validate_database_ssl`, or
-/// `ssl-mode=disable` bypass it entirely by using the alias sqlx itself
-/// recognizes. Lowercased so every caller can compare against a plain
-/// lowercase literal. See #142 review (CodeRabbit).
+/// same mode), and -- like libpq -- resolves a duplicate key to its *last*
+/// occurrence, not its first (`?sslmode=require&sslmode=disable` connects with
+/// `disable`). This must match all three of those exactly: an early-returning
+/// `find_map` would validate against the first occurrence while sqlx itself
+/// connects with the last, letting a URL past validation that sqlx would
+/// actually open in plaintext. Lowercased so every caller can compare against a
+/// plain lowercase literal. See #142 review (CodeRabbit).
 fn extract_sslmode(url: &Url) -> Option<String> {
-    url.query_pairs().find_map(|(key, value)| {
-        (key == "sslmode" || key == "ssl-mode").then(|| value.to_lowercase())
-    })
+    url.query_pairs()
+        .filter(|(key, _)| key == "sslmode" || key == "ssl-mode")
+        .next_back()
+        .map(|(_, value)| value.to_lowercase())
 }
 
 /// Whether the database host is on the same machine as this process
@@ -192,9 +195,10 @@ pub fn database_ssl_warning(url: &str) -> Option<String> {
 
 /// Rewrites a `DATABASE_URL` so it always connects with `sslmode=verify-full`,
 /// replacing any existing `sslmode`/`ssl-mode` value (including `disable`, in
-/// either key spelling or casing). Used when `DB_REQUIRE_SSL=true` to make the
-/// "always encrypt and verify" requirement effective regardless of what the
-/// connection string itself says. See #85.
+/// either key spelling or casing, and regardless of how many duplicate copies
+/// were present). Used when `DB_REQUIRE_SSL=true` to make the "always encrypt
+/// and verify" requirement effective regardless of what the connection string
+/// itself says. See #85.
 pub fn force_sslmode_verify_full(url: &str) -> Result<String, String> {
     let mut parsed =
         Url::parse(url).map_err(|e| format!("DATABASE_URL is not a valid URL: {e}"))?;
@@ -216,11 +220,30 @@ pub fn force_sslmode_verify_full(url: &str) -> Result<String, String> {
     Ok(parsed.to_string())
 }
 
+/// Parses a boolean env var that gates a *security-relevant* setting
+/// (`DB_REQUIRE_SSL`): unlike a cosmetic flag, silently treating an unrecognized
+/// value as `false` here would mean a typo (`DB_REQUIRE_SSL=ture`) silently
+/// disables TLS enforcement instead of failing loudly. Accepts `1`/`true`/`yes`
+/// and `0`/`false`/`no` (case-insensitive, trimmed); an unset var is `false`
+/// (the documented default); any other non-empty value is a startup error. See
+/// #142 review (CodeRabbit).
+fn parse_required_ssl_flag(raw: Option<String>) -> Result<bool, String> {
+    match raw {
+        None => Ok(false),
+        Some(value) => match value.trim().to_lowercase().as_str() {
+            "" => Ok(false),
+            "1" | "true" | "yes" => Ok(true),
+            "0" | "false" | "no" => Ok(false),
+            other => Err(format!(
+                "DB_REQUIRE_SSL must be one of true/false/1/0/yes/no, got {other:?}"
+            )),
+        },
+    }
+}
+
 impl Settings {
     pub fn from_env() -> Result<Self, String> {
-        let db_require_ssl = std::env::var("DB_REQUIRE_SSL")
-            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
-            .unwrap_or(false);
+        let db_require_ssl = parse_required_ssl_flag(std::env::var("DB_REQUIRE_SSL").ok())?;
 
         let enable_swagger = std::env::var("ENABLE_SWAGGER")
             .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
