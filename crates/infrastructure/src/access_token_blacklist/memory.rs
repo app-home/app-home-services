@@ -73,3 +73,14 @@ impl AccessTokenBlacklist for MemoryAccessTokenBlacklist {
         }
     }
 }
+
+#[cfg(test)]
+impl MemoryAccessTokenBlacklist {
+    /// Test-only: number of entries currently stored, including any not yet
+    /// pruned. Used to assert that the opportunistic sweep in `revoke` actually
+    /// bounds growth instead of just trusting the implementation (see #135 and
+    /// the CodeRabbit review on PR #142).
+    pub async fn entry_count(&self) -> usize {
+        self.entries.lock().await.len()
+    }
+}
