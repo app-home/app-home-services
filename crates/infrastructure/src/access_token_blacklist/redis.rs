@@ -1,5 +1,6 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
@@ -8,6 +9,14 @@ use uuid::Uuid;
 
 use shared::ports::{AccessTokenBlacklist, BlacklistError};
 
+/// Upper bound for a single Redis round-trip (`revoke`/`is_revoked`). The
+/// blacklist check runs on every authenticated request, so a Redis that is slow
+/// or partitioned (as opposed to one that cleanly returns an error) must still
+/// degrade to fail-open instead of stalling the request indefinitely --
+/// `ConnectionManager` retries internally, which would otherwise extend the
+/// wait even further. See #144.
+const REDIS_TIMEOUT: Duration = Duration::from_millis(250);
+
 /// Redis-backed access token revocation list.
 ///
 /// Revoked tokens live in Redis (keyed by their `jti`) with a TTL equal to their
@@ -15,12 +24,14 @@ use shared::ports::{AccessTokenBlacklist, BlacklistError};
 /// connected to the same Redis deployment and expire on their own once the token
 /// would have expired anyway.
 ///
-/// On Redis errors this implementation surfaces `BlacklistError` and the caller
-/// (the `AuthenticatedUser` extractor) fails open -- the token is allowed --
+/// On Redis errors (including a timeout, see `REDIS_TIMEOUT`) this
+/// implementation surfaces `BlacklistError` and the caller (the
+/// `AuthenticatedUser` extractor) fails open -- the token is allowed --
 /// matching the rate limiter's posture, so a Redis outage degrades availability
 /// rather than locking out every authenticated user. Each failure is logged at
 /// `error` level and counted in `redis_error_count` so the outage is visible in
-/// logs and metrics. `ConnectionManager` also reconnects automatically.
+/// logs and metrics. `ConnectionManager` also reconnects automatically, so a
+/// transient outage self-heals without restarting the process.
 #[derive(Clone)]
 pub struct RedisAccessTokenBlacklist {
     conn: ConnectionManager,
@@ -28,16 +39,33 @@ pub struct RedisAccessTokenBlacklist {
 }
 
 impl RedisAccessTokenBlacklist {
-    /// Opens a connection to `redis_url` and verifies it with a `PING` before
-    /// returning, so a misconfigured/unreachable Redis is caught at startup
-    /// (see `build_access_token_blacklist`) rather than surfacing as a
-    /// mysterious failure on the first `revoke`/`is_revoked` call.
+    /// Opens a connection to `redis_url` and attempts a `PING` to surface an
+    /// obviously misconfigured URL early (e.g. wrong scheme/host format).
+    ///
+    /// A failed `PING` does **not** fail `connect` itself: `ConnectionManager`
+    /// reconnects on its own, so returning the Redis-backed blacklist anyway
+    /// lets every subsequent call fail open per-request (see `REDIS_TIMEOUT`
+    /// and the trait docs) and self-heal automatically once Redis becomes
+    /// reachable. Only failing at `client.open`/`get_connection_manager` --
+    /// which indicate the URL itself can't be used at all -- causes `connect`
+    /// to return `Err`, in which case `build_access_token_blacklist` falls back
+    /// to the in-memory backend. See #143: this is what prevents a transient
+    /// startup outage from becoming a *permanent* fallback for the process's
+    /// lifetime.
     pub async fn connect(redis_url: &str) -> redis::RedisResult<Self> {
         let client = redis::Client::open(redis_url)?;
         let conn = client.get_connection_manager().await?;
-        redis::cmd("PING")
+
+        if let Err(e) = redis::cmd("PING")
             .query_async::<()>(&mut conn.clone())
-            .await?;
+            .await
+        {
+            tracing::warn!(
+                error = %e,
+                "Redis access token blacklist: initial PING failed, continuing with the Redis backend -- ConnectionManager will retry and revoke/is_revoked will fail open until it reconnects"
+            );
+        }
+
         Ok(Self {
             conn,
             redis_error_count: Arc::new(AtomicU64::new(0)),
@@ -81,11 +109,15 @@ impl AccessTokenBlacklist for RedisAccessTokenBlacklist {
         }
 
         let mut conn = self.conn.clone();
-        let result: redis::RedisResult<()> = conn.set_ex(self.key(jti), "1", ttl_secs).await;
+        let outcome = tokio::time::timeout(
+            REDIS_TIMEOUT,
+            conn.set_ex::<_, _, ()>(self.key(jti), "1", ttl_secs),
+        )
+        .await;
 
-        match result {
-            Ok(()) => Ok(()),
-            Err(e) => {
+        match outcome {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => {
                 self.record_redis_error();
                 tracing::error!(
                     error = %e,
@@ -94,21 +126,39 @@ impl AccessTokenBlacklist for RedisAccessTokenBlacklist {
                 );
                 Err(BlacklistError)
             }
+            Err(_elapsed) => {
+                self.record_redis_error();
+                tracing::error!(
+                    jti = %jti,
+                    timeout_ms = REDIS_TIMEOUT.as_millis(),
+                    "Redis access token blacklist: revoke timed out, failing open"
+                );
+                Err(BlacklistError)
+            }
         }
     }
 
     async fn is_revoked(&self, jti: Uuid) -> Result<bool, BlacklistError> {
         let mut conn = self.conn.clone();
-        let result: redis::RedisResult<i64> = conn.exists(self.key(jti)).await;
+        let outcome = tokio::time::timeout(REDIS_TIMEOUT, conn.exists::<_, i64>(self.key(jti))).await;
 
-        match result {
-            Ok(count) => Ok(count > 0),
-            Err(e) => {
+        match outcome {
+            Ok(Ok(count)) => Ok(count > 0),
+            Ok(Err(e)) => {
                 self.record_redis_error();
                 tracing::error!(
                     error = %e,
                     jti = %jti,
                     "Redis access token blacklist: exists check failed, failing open"
+                );
+                Err(BlacklistError)
+            }
+            Err(_elapsed) => {
+                self.record_redis_error();
+                tracing::error!(
+                    jti = %jti,
+                    timeout_ms = REDIS_TIMEOUT.as_millis(),
+                    "Redis access token blacklist: exists check timed out, failing open"
                 );
                 Err(BlacklistError)
             }

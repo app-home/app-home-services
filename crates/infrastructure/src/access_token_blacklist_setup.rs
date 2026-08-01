@@ -29,6 +29,14 @@ pub struct AccessTokenBlacklistErrorCounter {
 /// service logs a warning and falls back to in-memory rather than refusing to
 /// start. See the `AccessTokenBlacklist` trait docs and #88.
 ///
+/// This in-memory fallback only happens if `RedisAccessTokenBlacklist::connect`
+/// itself returns `Err` -- e.g. an unparsable `redis_url`. A Redis that's simply
+/// unreachable at the moment of startup is *not* such a case (see #143 and
+/// `connect`'s docs): `connect` tolerates that and returns the Redis-backed
+/// blacklist anyway, so this fallback branch is reserved for configuration
+/// errors, not transient outages, and does not need to "wait and retry" on its
+/// own -- `ConnectionManager` already does that internally.
+///
 /// Returns `AccessTokenBlacklistErrorCounter` so a handle to the Redis error
 /// counter can be captured before the concrete type is erased into
 /// `Arc<dyn AccessTokenBlacklist>`.
@@ -50,7 +58,7 @@ pub async fn build_access_token_blacklist(
             Err(e) => {
                 tracing::warn!(
                     error = %e,
-                    "Redis unavailable for access token blacklist, falling back to in-memory (single instance only)"
+                    "Failed to set up access token blacklist Redis client, falling back to in-memory (single instance only) -- this is a configuration error (e.g. an unparsable REDIS_URL), not a transient outage, and will persist until the config is fixed and the process restarts"
                 );
                 (
                     Arc::new(MemoryAccessTokenBlacklist::new()),

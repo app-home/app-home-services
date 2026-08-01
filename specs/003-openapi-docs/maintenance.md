@@ -79,7 +79,7 @@ cargo test --test responses_serde
 For external validation:
 
 ```bash
-cargo run &
+ENABLE_SWAGGER=true cargo run &
 curl http://localhost:3000/api-docs/openapi.json -o openapi.json
 npx @redocly/cli lint openapi.json
 ```

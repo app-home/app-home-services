@@ -19,6 +19,14 @@ pub trait RateLimiter: Send + Sync {
 #[derive(Debug, Clone, Copy)]
 pub struct BlacklistError;
 
+/// Revocation list for issued access tokens, keyed by the token's `jti` claim.
+///
+/// Implementations store each revocation only for the token's remaining
+/// lifetime, so entries expire on their own -- callers pass that remaining
+/// lifetime as `ttl_secs` on `revoke`. Backend failures are reported as
+/// `BlacklistError` and callers fail open (see `BlacklistError`'s docs), so a
+/// backend outage degrades to "no revocation list is currently enforced"
+/// instead of rejecting every authenticated request.
 #[async_trait]
 pub trait AccessTokenBlacklist: Send + Sync {
     /// Marks `jti` as revoked for `ttl_secs` seconds (callers pass the token's

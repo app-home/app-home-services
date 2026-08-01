@@ -28,6 +28,8 @@ pub struct JwtVerification {
 }
 
 impl JwtVerification {
+    /// Builds the verification config from the HMAC `secret` and the expected
+    /// `issuer`/`audience` claim values.
     pub fn new(secret: &str, issuer: String, audience: String) -> Self {
         Self {
             decoding_key: DecodingKey::from_secret(secret.as_bytes()),
@@ -36,6 +38,8 @@ impl JwtVerification {
         }
     }
 
+    /// Validation requiring HS256 and the configured `iss`/`aud` claims. `exp`
+    /// is required and checked by `jsonwebtoken`'s defaults.
     pub fn validation(&self) -> Validation {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_issuer(&[&self.issuer]);
@@ -43,6 +47,8 @@ impl JwtVerification {
         validation
     }
 
+    /// Decodes and validates `token`, returning its claims, or `None` if the
+    /// signature, algorithm, `iss`, `aud`, or `exp` check fails.
     pub fn decode<T: serde::de::DeserializeOwned>(&self, token: &str) -> Option<T> {
         jsonwebtoken::decode::<T>(token, &self.decoding_key, &self.validation())
             .ok()
