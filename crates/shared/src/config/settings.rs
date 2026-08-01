@@ -148,17 +148,20 @@ pub fn validate_database_ssl(url: &str) -> Result<(), String> {
 /// Non-fatal warning for a connection that can silently fall back to plaintext
 /// against a non-loopback database host -- i.e. no `sslmode` (the sqlx default,
 /// `prefer`, tries TLS but falls back to plaintext if the server doesn't support
-/// it) or an explicit `prefer`. `sslmode=disable` is not reported here because
-/// the remote-host case is already rejected by `validate_database_ssl`. See #85.
+/// it), an explicit `prefer`, or `allow` (libpq/sqlx tries plaintext *first* and
+/// only upgrades to TLS if the server demands it -- the same plaintext-capable
+/// outcome as `prefer`, just with the attempt order reversed).
+/// `sslmode=disable` is not reported here because the remote-host case is
+/// already rejected by `validate_database_ssl`. See #85.
 pub fn database_ssl_warning(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
     if db_host_is_loopback(&parsed) {
         return None;
     }
     let sslmode = extract_sslmode(&parsed);
-    if sslmode.is_none() || sslmode.as_deref() == Some("prefer") {
+    if matches!(sslmode.as_deref(), None | Some("prefer") | Some("allow")) {
         return Some(format!(
-            "DATABASE_URL targets a non-loopback database host ({:?}) without `sslmode=verify-full`; the default (`prefer`) silently falls back to plaintext if the server doesn't support TLS. Use `?sslmode=verify-full` or set DB_REQUIRE_SSL=true.",
+            "DATABASE_URL targets a non-loopback database host ({:?}) without `sslmode=verify-full`; the default (`prefer`) silently falls back to plaintext if the server doesn't support TLS, and `allow` tries plaintext first. Use `?sslmode=verify-full` or set DB_REQUIRE_SSL=true.",
             parsed.host_str()
         ));
     }
@@ -212,7 +215,11 @@ impl Settings {
 
         validate_database_ssl(&database_url)?;
         if let Some(warning) = database_ssl_warning(&database_url) {
-            eprintln!("WARN: {warning}");
+            // init_logging() runs before Settings::from_env() in main.rs, and
+            // every other startup diagnostic goes through tracing -- route this
+            // one the same way so it isn't the one line that bypasses structured
+            // logging, log levels, and any log-based alerting built on it.
+            tracing::warn!("{warning}");
         }
 
         Ok(Self {
