@@ -18,3 +18,21 @@ groups:
             open (allowing all requests through) for each one. See
             docs/alerting.md for context and for how to raise this
             threshold if it's firing too often on transient blips.
+  - name: app-home-services-access-token-blacklist
+    rules:
+      - alert: RedisAccessTokenBlacklistFailingOpen
+        # Same deliberately low starting threshold as the rate limiter alert:
+        # a failing-open access token revocation list means revoked tokens keep
+        # validating (a security degradation), so we want to hear about any
+        # Redis error at all. See docs/alerting.md.
+        expr: increase(access_token_blacklist_redis_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Redis access token blacklist is failing open"
+          description: >-
+            The Redis-backed access token revocation list has recorded
+            {{ $value }} Redis error(s) in the last 5 minutes and is failing
+            open: revoked access tokens will keep validating until the outage
+            clears. See docs/alerting.md for context.

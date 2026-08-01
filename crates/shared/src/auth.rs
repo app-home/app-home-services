@@ -12,6 +12,7 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use crate::api::ErrorResponse;
+use crate::ports::{AccessTokenBlacklist, BlacklistError};
 
 /// Explicit issuer/audience for the app's own JWTs, so tokens are rejected
 /// unless they were issued by this service instance for this audience. Both are
@@ -51,8 +52,15 @@ impl JwtVerification {
 
 pub struct AuthenticatedUser {
     pub user_id: Uuid,
+    /// Unique id of the presented access token (`jti` claim), so routes like
+    /// logout can revoke exactly that token.
+    pub jti: Uuid,
+    /// `exp` claim of the presented access token (unix seconds), so the
+    /// remaining lifetime (and thus the blacklist TTL) can be computed.
+    pub exp: usize,
 }
 
+#[derive(Debug)]
 pub struct AuthRejection;
 
 impl IntoResponse for AuthRejection {
@@ -88,15 +96,41 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedUser {
                 .await
                 .map_err(|_| AuthRejection)?;
 
+        let Extension(blacklist) =
+            Extension::<Arc<dyn AccessTokenBlacklist>>::from_request_parts(parts, _state)
+                .await
+                .map_err(|_| AuthRejection)?;
+
         #[derive(Deserialize)]
         struct Claims {
             sub: Uuid,
+            jti: Uuid,
+            exp: usize,
         }
 
         let claims = verification.decode::<Claims>(&token).ok_or(AuthRejection)?;
 
+        // Revoked access tokens (e.g. after logout, see #88) are rejected before
+        // the request reaches the handler. If the blacklist backend is unavailable
+        // the check fails open -- the token is allowed -- matching the rate
+        // limiter's posture, so a Redis outage degrades availability, not every
+        // authenticated request.
+        match blacklist.is_revoked(claims.jti).await {
+            Ok(true) => return Err(AuthRejection),
+            Ok(false) => {}
+            Err(BlacklistError) => {
+                tracing::warn!(
+                    user_id = %claims.sub,
+                    jti = %claims.jti,
+                    "Access token blacklist check failed, failing open"
+                );
+            }
+        }
+
         Ok(AuthenticatedUser {
             user_id: claims.sub,
+            jti: claims.jti,
+            exp: claims.exp,
         })
     }
 }

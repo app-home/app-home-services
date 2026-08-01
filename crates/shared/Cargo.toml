@@ -14,3 +14,4 @@ utoipa = { version = "5.5" }
 axum = "0.8"
 jsonwebtoken = "10"
 async-trait = "0.1"
+tracing = "0.1"

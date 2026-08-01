@@ -17,6 +17,9 @@ use admin::adapters::inbound::admin_routes::{
 use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
 use app_home_services::api_doc::ApiDoc;
 use app_home_services::health::health_check;
+use app_home_services::infrastructure::access_token_blacklist_setup::{
+    AccessTokenBlacklistErrorCounter, build_access_token_blacklist,
+};
 use app_home_services::infrastructure::config::Settings;
 use app_home_services::infrastructure::metrics_guard::{MetricsGuardConfig, metrics_ip_allowlist};
 use app_home_services::infrastructure::rate_limiter_setup::{
@@ -148,6 +151,15 @@ async fn main() {
 
     spawn_rate_limiter_metrics_poller(rate_limiter_error_counters);
 
+    // See build_access_token_blacklist's docs for why REDIS_URL selects the
+    // backend, and why (unlike the rate limiters) an unreachable Redis falls back
+    // to in-memory at startup rather than aborting -- the blacklist check fails
+    // open anyway (#88).
+    let (access_token_blacklist, blacklist_error_counter) =
+        build_access_token_blacklist(&settings).await;
+
+    spawn_access_token_blacklist_metrics_poller(blacklist_error_counter);
+
     // Single JWT verification config (secret + iss/aud) shared by every
     // protected route's `AuthenticatedUser` extractor. Enforcing a non-default
     // issuer/audience rejects tokens minted in another environment that shares
@@ -235,6 +247,11 @@ async fn main() {
         .layer(Extension(profile_repo))
         .layer(Extension(admin_repo))
         .layer(Extension(verification))
+        // Shared access token revocation list: every protected route's
+        // `AuthenticatedUser` extractor rejects tokens whose `jti` was revoked
+        // (e.g. at logout, see #88), and the logout handler itself uses it to
+        // revoke the presented token.
+        .layer(Extension(access_token_blacklist))
         // /api/health runs a real `SELECT 1` against the pool (see src/health.rs),
         // so it needs its own handle to it -- this clone is cheap (PgPool wraps an
         // Arc internally), not a second pool.
@@ -303,6 +320,29 @@ fn spawn_rate_limiter_metrics_poller(counters: RateLimiterErrorCounters) {
                 let value = counter.load(Ordering::Relaxed);
                 metrics::counter!("rate_limiter_redis_errors_total", "scope" => "refresh")
                     .absolute(value);
+            }
+        }
+    });
+}
+
+/// Spawns a background task that, every 15 seconds, reads the access token
+/// blacklist's Redis error counter (if it has one -- see
+/// `AccessTokenBlacklistErrorCounter`) and publishes it as
+/// `access_token_blacklist_redis_errors_total` to the installed Prometheus
+/// recorder.
+///
+/// Mirrors `spawn_rate_limiter_metrics_poller` (same `absolute`, not `increment`,
+/// since the counter is already the cumulative total held inside
+/// `RedisAccessTokenBlacklist`). A no-op on the in-memory backend.
+fn spawn_access_token_blacklist_metrics_poller(counter: AccessTokenBlacklistErrorCounter) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+
+            if let Some(counter) = &counter.redis {
+                let value = counter.load(Ordering::Relaxed);
+                metrics::counter!("access_token_blacklist_redis_errors_total").absolute(value);
             }
         }
     });
