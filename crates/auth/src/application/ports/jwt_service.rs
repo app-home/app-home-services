@@ -11,6 +11,11 @@ pub struct TokenPair {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AccessTokenClaims {
     pub sub: Uuid,
+    /// Unique token id, minted per access token, so a single token can be
+    /// revoked without affecting the others a user may hold (see #88).
+    pub jti: Uuid,
+    pub iss: String,
+    pub aud: String,
     pub exp: usize,
     pub iat: usize,
 }
@@ -19,6 +24,8 @@ pub struct AccessTokenClaims {
 pub struct RefreshTokenClaims {
     pub sub: Uuid,
     pub session_id: Uuid,
+    pub iss: String,
+    pub aud: String,
     pub exp: usize,
     pub iat: usize,
 }

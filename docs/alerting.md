@@ -1,6 +1,8 @@
-# Alerting: Redis rate limiter fail-open errors
+# Alerting: Redis fail-open errors (rate limiter and access token blacklist)
 
 ## What this covers
+
+### Redis rate limiter
 
 `RedisRateLimiter` fails open on any Redis error: `check()` returns `true` (allows
 the request) and `remaining_attempts()` returns the max, rather than blocking
@@ -16,6 +18,23 @@ rate_limiter_redis_errors_total{scope="refresh"}
 This is a cumulative counter (never decreases while the process is running), polled
 and re-published every 15 seconds from the in-process atomic counter maintained by
 `RedisRateLimiter`. It resets to 0 on process restart.
+
+### Redis access token blacklist
+
+`RedisAccessTokenBlacklist` (see #88) also fails open on any Redis error: the
+`AuthenticatedUser` extractor treats an unavailable revocation list as "not
+revoked", so revoked access tokens keep validating until the outage clears -- an
+availability-over-strictness choice made deliberately (the same posture as the rate
+limiter). Each occurrence is counted in-process (see
+`RedisAccessTokenBlacklist::redis_error_count` / `error_counter_handle`) and
+published by `main.rs` as:
+
+```
+access_token_blacklist_redis_errors_total
+```
+
+Same polling cadence (every 15 seconds) and same restart-resets-to-0 semantics as
+the rate limiter counter.
 
 ## Scraping it
 
@@ -33,11 +52,17 @@ scrape_configs:
 `/metrics` is not authenticated. Like any Prometheus scrape endpoint, it should only
 be reachable from inside your monitoring network/namespace, not exposed publicly.
 
-## The alert rule (`prometheus/alerts.yml`)
+## The alert rules (`prometheus/alerts.yml`)
 
 ```yaml
 expr: increase(rate_limiter_redis_errors_total[5m]) > 0
+expr: increase(access_token_blacklist_redis_errors_total[5m]) > 0
 ```
+
+Both start at the same deliberately low `> 0` threshold (see below); the blacklist
+one is arguably the more important of the two to notice, since a failing-open
+revocation list is a security degradation (revoked tokens keep working), while a
+failing-open rate limiter is only a brute-force defense weakening.
 
 ### Why the threshold starts at `> 0`
 

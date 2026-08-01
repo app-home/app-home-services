@@ -73,6 +73,7 @@ pub async fn build_rate_limiters(settings: &Settings)
 ## External Docs
 
 - [Redis Security & TLS](../redis-security.md) — Redis password auth, TLS decision
+- [Postgres SSL & TLS](../postgres-ssl.md) — `sslmode` modes, the non-loopback guard, `DB_REQUIRE_SSL`
 - [Alerting](../alerting.md) — Prometheus metrics for `rate_limiter_redis_errors_total`
 
 ## Configuration
@@ -81,7 +82,8 @@ pub async fn build_rate_limiters(settings: &Settings)
 
 | Env Var | Default | Description |
 |---------|---------|-------------|
-| `DATABASE_URL` | **required** | PostgreSQL connection string |
+| `DATABASE_URL` | **required** | PostgreSQL connection string. `sslmode=disable` against a non-loopback host aborts startup (see [Postgres SSL & TLS](../postgres-ssl.md)). |
+| `DB_REQUIRE_SSL` | `false` | Force `sslmode=verify-full`, replacing any `sslmode` in `DATABASE_URL` |
 | `DB_MAX_CONNECTIONS` | `10` | Max pool connections per instance. `N * DB_MAX_CONNECTIONS` across N instances must stay under Postgres's own `max_connections`. |
 | `DB_MIN_CONNECTIONS` | `0` | Idle connections the pool tries to keep pre-warmed |
 | `DB_ACQUIRE_TIMEOUT_SECONDS` | `30` | Max wait for a pool connection before failing fast |
@@ -94,6 +96,7 @@ pub async fn build_rate_limiters(settings: &Settings)
 | `CORS_ALLOWED_ORIGINS` | (empty) | Comma-separated; empty = same-origin only |
 | `TRUSTED_PROXY_IPS` | (empty) | Comma-separated IPs for X-Forwarded-For trust |
 | `METRICS_ALLOWED_IPS` | (empty) | Comma-separated IPs allowed to reach `/metrics`; empty = no restriction; loopback always allowed |
+| `ENABLE_SWAGGER` | `false` | Serve `/swagger-ui` and `/api-docs/openapi.json`; disabled by default so the API surface is not exposed (see #86) |
 | `REDIS_URL` | (optional) | If set, uses `RedisRateLimiter`; unset = `MemoryRateLimiter` |
 
 ## Integration

@@ -8,14 +8,19 @@ use axum::{
     Extension,
     routing::{get, post, put},
 };
-use jsonwebtoken::DecodingKey;
+use shared::auth::JwtVerification;
 use utoipa::OpenApi;
 
 use admin::adapters::inbound::admin_routes::{
     get_user_handler, list_users_handler, update_user_role_handler,
 };
 use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
+use admin::application::ports::admin_repository::AdminRepository;
 use app_home_services::api_doc::ApiDoc;
+use app_home_services::health::health_check;
+use app_home_services::infrastructure::access_token_blacklist_setup::{
+    AccessTokenBlacklistErrorCounter, build_access_token_blacklist,
+};
 use app_home_services::infrastructure::config::Settings;
 use app_home_services::infrastructure::metrics_guard::{MetricsGuardConfig, metrics_ip_allowlist};
 use app_home_services::infrastructure::rate_limiter_setup::{
@@ -23,7 +28,6 @@ use app_home_services::infrastructure::rate_limiter_setup::{
 };
 use auth::adapters::audit_event_handler::AuditEventHandler;
 use auth::adapters::google_auth_provider::GoogleAuthProvider;
-use app_home_services::health::health_check;
 use auth::adapters::inbound::login_routes::login_password_handler;
 use auth::adapters::inbound::logout_routes::logout_handler;
 use auth::adapters::inbound::oauth_callback::login_google_handler;
@@ -35,6 +39,7 @@ use auth::adapters::postgres_user_repo::PostgresUserRepo;
 use auth::config::auth_settings::AuthSettings;
 use profiles::adapters::inbound::profile_routes::{get_profile_handler, update_profile_handler};
 use profiles::adapters::outbound::postgres_profile_repo::PostgresProfileRepo;
+use profiles::application::ports::profile_repository::ProfileRepository;
 use shared::event_bus::EventBus;
 use shared::user_directory::UserDirectory;
 use utoipa_swagger_ui::SwaggerUi;
@@ -89,18 +94,32 @@ async fn main() {
         );
     }
 
+    if settings.enable_swagger {
+        tracing::info!(
+            "ENABLE_SWAGGER=true: serving Swagger UI at /swagger-ui and the OpenAPI spec at /api-docs/openapi.json"
+        );
+    } else {
+        tracing::info!(
+            "ENABLE_SWAGGER unset/false: /swagger-ui and /api-docs/openapi.json are disabled (no API surface exposure)"
+        );
+    }
+
     let user_repo = PostgresUserRepo::new(pool.clone());
     let session_repo = PostgresSessionRepo::new(pool.clone());
-    let profile_repo = Arc::new(PostgresProfileRepo::new(pool.clone()));
+    // Coerced to `Arc<dyn ...>` so the Extension key matches what the profile and
+    // admin handlers extract -- `Extension<Arc<ConcreteRepo>>` would be a
+    // different key than `Extension<Arc<dyn Repo>>` and the routes would 500 with
+    // "Missing request extension".
+    let profile_repo: Arc<dyn ProfileRepository> = Arc::new(PostgresProfileRepo::new(pool.clone()));
 
     // `admin` depends only on the `UserDirectory` port (defined in `shared`) for user
     // identity, not on the `auth` crate or its `users` table directly -- this is the
     // composition root wiring the concrete `auth`-owned implementation in. See
     // docs/adr/0001-modular-monolith.md for why this replaced admin's previous direct
     // SQL access to `users`.
-    let user_directory: Arc<dyn UserDirectory> =
-        Arc::new(PostgresUserDirectory::new(pool.clone()));
-    let admin_repo = Arc::new(PostgresAdminRepo::new(pool.clone(), user_directory));
+    let user_directory: Arc<dyn UserDirectory> = Arc::new(PostgresUserDirectory::new(pool.clone()));
+    let admin_repo: Arc<dyn AdminRepository> =
+        Arc::new(PostgresAdminRepo::new(pool.clone(), user_directory));
 
     let (event_bus, mut event_rx) = EventBus::new(256);
     let audit_handler = AuditEventHandler::new(pool.clone());
@@ -125,6 +144,8 @@ async fn main() {
         &auth_settings.jwt_secret,
         auth_settings.access_token_expiry_minutes,
         auth_settings.refresh_token_expiry_days,
+        &auth_settings.jwt_issuer,
+        &auth_settings.jwt_audience,
     );
 
     // See build_rate_limiters' docs for why REDIS_URL selects the backend, and why
@@ -137,7 +158,24 @@ async fn main() {
 
     spawn_rate_limiter_metrics_poller(rate_limiter_error_counters);
 
-    let decoding_key = Arc::new(DecodingKey::from_secret(auth_settings.jwt_secret.as_bytes()));
+    // See build_access_token_blacklist's docs for why REDIS_URL selects the
+    // backend, and why (unlike the rate limiters) an unreachable Redis falls back
+    // to in-memory at startup rather than aborting -- the blacklist check fails
+    // open anyway (#88).
+    let (access_token_blacklist, blacklist_error_counter) =
+        build_access_token_blacklist(&settings).await;
+
+    spawn_access_token_blacklist_metrics_poller(blacklist_error_counter);
+
+    // Single JWT verification config (secret + iss/aud) shared by every
+    // protected route's `AuthenticatedUser` extractor. Enforcing a non-default
+    // issuer/audience rejects tokens minted in another environment that shares
+    // the same JWT_SECRET -- see #87.
+    let verification = Arc::new(JwtVerification::new(
+        &auth_settings.jwt_secret,
+        auth_settings.jwt_issuer.clone(),
+        auth_settings.jwt_audience.clone(),
+    ));
 
     if settings.server_host == "0.0.0.0" {
         tracing::warn!(
@@ -200,7 +238,7 @@ async fn main() {
         .layer(axum::middleware::from_fn(metrics_ip_allowlist))
         .layer(Extension(metrics_guard_config));
 
-    let app = axum::Router::new()
+    let mut app = axum::Router::new()
         .route("/api/auth/login/password", post(login_password_handler))
         .route("/api/auth/login/google", post(login_google_handler))
         .route("/api/auth/logout", post(logout_handler))
@@ -215,7 +253,12 @@ async fn main() {
         .route("/api/admin/users/{id}/role", put(update_user_role_handler))
         .layer(Extension(profile_repo))
         .layer(Extension(admin_repo))
-        .layer(Extension(decoding_key))
+        .layer(Extension(verification))
+        // Shared access token revocation list: every protected route's
+        // `AuthenticatedUser` extractor rejects tokens whose `jti` was revoked
+        // (e.g. at logout, see #88), and the logout handler itself uses it to
+        // revoke the presented token.
+        .layer(Extension(access_token_blacklist))
         // /api/health runs a real `SELECT 1` against the pool (see src/health.rs),
         // so it needs its own handle to it -- this clone is cheap (PgPool wraps an
         // Arc internally), not a second pool.
@@ -225,10 +268,19 @@ async fn main() {
         // publicly. `/metrics` is still unauthenticated (no credentials required),
         // but is now additionally gated by an IP allowlist when METRICS_ALLOWED_IPS
         // is configured -- see crates/infrastructure/src/metrics_guard.rs and #83.
-        .merge(metrics_router)
-        .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))
-        .layer(cors)
-        .with_state(state);
+        .merge(metrics_router);
+
+    // Swagger UI and the OpenAPI spec are only registered when explicitly
+    // enabled (ENABLE_SWAGGER=true) -- see #86. Without the flag both routes
+    // return 404, so a publicly reachable instance exposes no API surface via
+    // docs. `ApiDoc::openapi()` is a generated static spec, so this conditional
+    // has no runtime cost beyond an already-generated constant.
+    if settings.enable_swagger {
+        app = app
+            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
+    }
+
+    let app = app.layer(cors).with_state(state);
 
     tracing::info!(address = %addr, "Listening");
 
@@ -275,6 +327,29 @@ fn spawn_rate_limiter_metrics_poller(counters: RateLimiterErrorCounters) {
                 let value = counter.load(Ordering::Relaxed);
                 metrics::counter!("rate_limiter_redis_errors_total", "scope" => "refresh")
                     .absolute(value);
+            }
+        }
+    });
+}
+
+/// Spawns a background task that, every 15 seconds, reads the access token
+/// blacklist's Redis error counter (if it has one -- see
+/// `AccessTokenBlacklistErrorCounter`) and publishes it as
+/// `access_token_blacklist_redis_errors_total` to the installed Prometheus
+/// recorder.
+///
+/// Mirrors `spawn_rate_limiter_metrics_poller` (same `absolute`, not `increment`,
+/// since the counter is already the cumulative total held inside
+/// `RedisAccessTokenBlacklist`). A no-op on the in-memory backend.
+fn spawn_access_token_blacklist_metrics_poller(counter: AccessTokenBlacklistErrorCounter) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+
+            if let Some(counter) = &counter.redis {
+                let value = counter.load(Ordering::Relaxed);
+                metrics::counter!("access_token_blacklist_redis_errors_total").absolute(value);
             }
         }
     });

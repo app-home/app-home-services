@@ -1,6 +1,8 @@
 use std::fmt;
 use std::net::IpAddr;
 
+use url::Url;
+
 #[derive(Clone)]
 pub struct Settings {
     pub database_url: String,
@@ -35,6 +37,13 @@ pub struct Settings {
     /// Postgres) that can drop long-lived connections without either side
     /// noticing immediately. `0` disables lifetime-based recycling.
     pub db_max_lifetime_seconds: u64,
+    /// When `true`, the connection to Postgres is forced to use
+    /// `sslmode=verify-full` regardless of what `DATABASE_URL` specifies: any
+    /// existing `sslmode` query parameter is replaced. This is the "production
+    /// demands an encrypted, certificate-verified connection" switch -- it
+    /// refuses to be undermined by an accidentally plaintext `sslmode=disable`
+    /// in the connection string. See `force_sslmode_verify_full`. See #85.
+    pub db_require_ssl: bool,
     /// IP addresses allowed to reach `GET /metrics` (e.g. the Prometheus server's
     /// IP). Resolved the same way as rate-limiting IPs -- honoring
     /// `X-Forwarded-For`/`X-Real-IP` only from `trusted_proxy_ips` -- so this works
@@ -50,6 +59,13 @@ pub struct Settings {
     /// `SERVER_HOST=0.0.0.0` (e.g. containers) and want `/metrics` locked down
     /// without standing up a full reverse-proxy/auth setup. See #83.
     pub metrics_allowed_ips: Vec<IpAddr>,
+    /// When `true`, Swagger UI and the combined OpenAPI spec are served at
+    /// `/swagger-ui` and `/api-docs/openapi.json`. When `false` (the default),
+    /// neither route is registered at all, so an attacker cannot enumerate the
+    /// full API surface from a publicly reachable instance. Enable this only
+    /// where interactive API documentation is actually needed (e.g. local
+    /// development). See #86.
+    pub enable_swagger: bool,
 }
 
 impl fmt::Debug for Settings {
@@ -77,16 +93,131 @@ impl fmt::Debug for Settings {
             )
             .field("db_idle_timeout_seconds", &self.db_idle_timeout_seconds)
             .field("db_max_lifetime_seconds", &self.db_max_lifetime_seconds)
+            .field("db_require_ssl", &self.db_require_ssl)
             .field("metrics_allowed_ips", &self.metrics_allowed_ips)
+            .field("enable_swagger", &self.enable_swagger)
             .finish()
     }
 }
 
+/// `sslmode` query parameter from a `postgres://`-style `DATABASE_URL`, or
+/// `None` when the URL omits it (sqlx then defaults to `prefer`, which tries
+/// TLS but silently falls back to plaintext).
+fn extract_sslmode(url: &Url) -> Option<String> {
+    url.query_pairs()
+        .find_map(|(key, value)| (key == "sslmode").then(|| value.into_owned()))
+}
+
+/// Whether the database host is on the same machine as this process
+/// (`127.0.0.1`, `::1`, or the `localhost` hostname). Plaintext connections to
+/// such hosts never leave the machine, so `sslmode=disable` is acceptable there
+/// for local development.
+fn db_host_is_loopback(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        // The `url` crate surfaces IPv4 literals like `127.0.0.1` as a Domain,
+        // so parse the domain as an IP before falling back to hostname matches.
+        Some(url::Host::Domain(domain)) => {
+            domain.eq_ignore_ascii_case("localhost")
+                || domain
+                    .parse::<IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false)
+        }
+        None => false,
+    }
+}
+
+/// Rejects a `DATABASE_URL` that would send credentials and data in plaintext
+/// over the network: `sslmode=disable` against a non-loopback database host is a
+/// fatal startup error, by design. The alternative -- starting anyway and
+/// streaming password hashes, tokens and user data unencrypted to a remote
+/// Postgres -- is the exact vulnerability this exists to close. See #85.
+pub fn validate_database_ssl(url: &str) -> Result<(), String> {
+    let parsed = Url::parse(url).map_err(|e| format!("DATABASE_URL is not a valid URL: {e}"))?;
+    if extract_sslmode(&parsed).as_deref() == Some("disable") && !db_host_is_loopback(&parsed) {
+        return Err(format!(
+            "DATABASE_URL uses sslmode=disable against a non-loopback database host ({:?}); this sends credentials and data in plaintext over the network. Use `?sslmode=verify-full`, or set DB_REQUIRE_SSL=true, for any non-local database. See .env.example.",
+            parsed.host_str()
+        ));
+    }
+    Ok(())
+}
+
+/// Non-fatal warning for a connection that can silently fall back to plaintext
+/// against a non-loopback database host -- i.e. no `sslmode` (the sqlx default,
+/// `prefer`, tries TLS but falls back to plaintext if the server doesn't support
+/// it) or an explicit `prefer`. `sslmode=disable` is not reported here because
+/// the remote-host case is already rejected by `validate_database_ssl`. See #85.
+pub fn database_ssl_warning(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    if db_host_is_loopback(&parsed) {
+        return None;
+    }
+    let sslmode = extract_sslmode(&parsed);
+    if sslmode.is_none() || sslmode.as_deref() == Some("prefer") {
+        return Some(format!(
+            "DATABASE_URL targets a non-loopback database host ({:?}) without `sslmode=verify-full`; the default (`prefer`) silently falls back to plaintext if the server doesn't support TLS. Use `?sslmode=verify-full` or set DB_REQUIRE_SSL=true.",
+            parsed.host_str()
+        ));
+    }
+    None
+}
+
+/// Rewrites a `DATABASE_URL` so it always connects with `sslmode=verify-full`,
+/// replacing any existing `sslmode` value (including `disable`). Used when
+/// `DB_REQUIRE_SSL=true` to make the "always encrypt and verify" requirement
+/// effective regardless of what the connection string itself says. See #85.
+pub fn force_sslmode_verify_full(url: &str) -> Result<String, String> {
+    let mut parsed =
+        Url::parse(url).map_err(|e| format!("DATABASE_URL is not a valid URL: {e}"))?;
+
+    let remaining: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(key, _)| key != "sslmode")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+
+    parsed
+        .query_pairs_mut()
+        .clear()
+        .extend_pairs(remaining.into_iter().chain(std::iter::once((
+            "sslmode".to_string(),
+            "verify-full".to_string(),
+        ))));
+
+    Ok(parsed.to_string())
+}
+
 impl Settings {
     pub fn from_env() -> Result<Self, String> {
+        let db_require_ssl = std::env::var("DB_REQUIRE_SSL")
+            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
+        let enable_swagger = std::env::var("ENABLE_SWAGGER")
+            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false);
+
+        let database_url = {
+            let raw = std::env::var("DATABASE_URL")
+                .map_err(|_| "DATABASE_URL must be set".to_string())?;
+            if db_require_ssl {
+                force_sslmode_verify_full(&raw)?
+            } else {
+                raw
+            }
+        };
+
+        validate_database_ssl(&database_url)?;
+        if let Some(warning) = database_ssl_warning(&database_url) {
+            eprintln!("WARN: {warning}");
+        }
+
         Ok(Self {
-            database_url: std::env::var("DATABASE_URL")
-                .map_err(|_| "DATABASE_URL must be set".to_string())?,
+            database_url,
+            db_require_ssl,
             server_host: std::env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
             server_port: std::env::var("SERVER_PORT")
                 .unwrap_or_else(|_| "3000".to_string())
@@ -139,6 +270,7 @@ impl Settings {
                 .filter(|s| !s.is_empty())
                 .filter_map(|s| s.parse::<IpAddr>().ok())
                 .collect(),
+            enable_swagger,
         })
     }
 }
