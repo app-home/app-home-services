@@ -157,7 +157,11 @@ impl AccessTokenBlacklist for RedisAccessTokenBlacklist {
 
     async fn is_revoked(&self, jti: Uuid) -> Result<bool, BlacklistError> {
         let mut conn = self.conn.clone();
-        let outcome = tokio::time::timeout(REDIS_TIMEOUT, conn.exists::<_, i64>(self.key(jti))).await;
+        let outcome = tokio::time::timeout(
+            REDIS_TIMEOUT,
+            conn.exists::<_, i64>(self.key(jti)),
+        )
+        .await;
 
         match outcome {
             Ok(Ok(count)) => Ok(count > 0),
