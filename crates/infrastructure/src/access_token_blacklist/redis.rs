@@ -4,17 +4,17 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
-use redis::aio::ConnectionManager;
+use redis::aio::{ConnectionManager, ConnectionManagerConfig};
 use uuid::Uuid;
 
 use shared::ports::{AccessTokenBlacklist, BlacklistError};
 
-/// Upper bound for a single Redis round-trip (`revoke`/`is_revoked`). The
-/// blacklist check runs on every authenticated request, so a Redis that is slow
-/// or partitioned (as opposed to one that cleanly returns an error) must still
-/// degrade to fail-open instead of stalling the request indefinitely --
-/// `ConnectionManager` retries internally, which would otherwise extend the
-/// wait even further. See #144.
+/// Upper bound for a single Redis round-trip (`revoke`/`is_revoked`, and the
+/// startup `PING`). The blacklist check runs on every authenticated request,
+/// so a Redis that is slow or partitioned (as opposed to one that cleanly
+/// returns an error) must still degrade to fail-open instead of stalling the
+/// request indefinitely -- `ConnectionManager` retries internally, which
+/// would otherwise extend the wait even further. See #144.
 const REDIS_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Redis-backed access token revocation list.
@@ -39,31 +39,48 @@ pub struct RedisAccessTokenBlacklist {
 }
 
 impl RedisAccessTokenBlacklist {
-    /// Opens a connection to `redis_url` and attempts a `PING` to surface an
-    /// obviously misconfigured URL early (e.g. wrong scheme/host format).
+    /// Builds a lazy connection to `redis_url` and attempts a `PING` (bounded
+    /// by `REDIS_TIMEOUT`) to surface an obviously misconfigured URL early.
     ///
-    /// A failed `PING` does **not** fail `connect` itself: `ConnectionManager`
-    /// reconnects on its own, so returning the Redis-backed blacklist anyway
-    /// lets every subsequent call fail open per-request (see `REDIS_TIMEOUT`
-    /// and the trait docs) and self-heal automatically once Redis becomes
-    /// reachable. Only failing at `client.open`/`get_connection_manager` --
-    /// which indicate the URL itself can't be used at all -- causes `connect`
-    /// to return `Err`, in which case `build_access_token_blacklist` falls back
-    /// to the in-memory backend. See #143: this is what prevents a transient
-    /// startup outage from becoming a *permanent* fallback for the process's
-    /// lifetime.
+    /// Uses `get_connection_manager_lazy`, **not** `get_connection_manager`:
+    /// the latter connects eagerly and would make `connect` itself return
+    /// `Err` whenever Redis simply happens to be down at this exact moment --
+    /// which is precisely the transient-outage case #143 needs to survive.
+    /// The lazy variant returns immediately without requiring a live
+    /// connection; the actual connection (and `ConnectionManager`'s automatic
+    /// reconnection) happens on first use.
+    ///
+    /// A failed (or timed-out) `PING` does **not** fail `connect` either, for
+    /// the same reason: it only logs a warning and returns the Redis-backed
+    /// blacklist anyway, so every subsequent call fails open per-request (see
+    /// `REDIS_TIMEOUT` and the trait docs) and self-heals automatically once
+    /// Redis becomes reachable. `connect` only returns `Err` for a
+    /// genuine configuration problem (e.g. `redis_url` fails to parse), in
+    /// which case `build_access_token_blacklist` falls back to the in-memory
+    /// backend.
     pub async fn connect(redis_url: &str) -> redis::RedisResult<Self> {
         let client = redis::Client::open(redis_url)?;
-        let conn = client.get_connection_manager().await?;
+        let conn = client.get_connection_manager_lazy(ConnectionManagerConfig::default())?;
 
-        if let Err(e) = redis::cmd("PING")
-            .query_async::<()>(&mut conn.clone())
-            .await
+        match tokio::time::timeout(
+            REDIS_TIMEOUT,
+            redis::cmd("PING").query_async::<()>(&mut conn.clone()),
+        )
+        .await
         {
-            tracing::warn!(
-                error = %e,
-                "Redis access token blacklist: initial PING failed, continuing with the Redis backend -- ConnectionManager will retry and revoke/is_revoked will fail open until it reconnects"
-            );
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(
+                    error = %e,
+                    "Redis access token blacklist: initial PING failed, continuing with the Redis backend -- ConnectionManager will retry and revoke/is_revoked will fail open until it reconnects"
+                );
+            }
+            Err(_elapsed) => {
+                tracing::warn!(
+                    timeout_ms = REDIS_TIMEOUT.as_millis(),
+                    "Redis access token blacklist: initial PING timed out, continuing with the Redis backend -- ConnectionManager will retry and revoke/is_revoked will fail open until it reconnects"
+                );
+            }
         }
 
         Ok(Self {

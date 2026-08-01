@@ -2,10 +2,9 @@
 
 ## `sslmode` modes
 
-The service parses `DATABASE_URL` before it passes the resulting connection URL to
-sqlx. When `DB_REQUIRE_SSL=true`, it rewrites `sslmode` to `verify-full` (see
-below). Otherwise the URL is passed through as given, and sqlx reads the `sslmode`
-query parameter the same way libpq does:
+When `DB_REQUIRE_SSL=true`, the service parses `DATABASE_URL` and rewrites
+`sslmode` to `verify-full` (see below). Otherwise it passes the raw URL to sqlx,
+which reads the `sslmode` query parameter the same way libpq does:
 
 | Mode | Behavior | Verdict |
 |------|----------|---------|
