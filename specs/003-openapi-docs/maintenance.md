@@ -80,8 +80,18 @@ For external validation:
 
 ```bash
 ENABLE_SWAGGER=true cargo run &
+SERVER_PID=$!
+
+# cargo run returns immediately, before the binary is even compiled -- wait
+# for the health endpoint to answer instead of racing it with a fixed sleep.
+until curl -sf http://localhost:3000/api/health > /dev/null 2>&1; do
+  sleep 1
+done
+
 curl http://localhost:3000/api-docs/openapi.json -o openapi.json
 npx @redocly/cli lint openapi.json
+
+kill "$SERVER_PID"
 ```
 
 ## Secrets Policy (FR-014)
