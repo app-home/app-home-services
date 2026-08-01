@@ -225,9 +225,11 @@ pub fn force_sslmode_verify_full(url: &str) -> Result<String, String> {
 /// value as `false` here would mean a typo (`DB_REQUIRE_SSL=ture`) silently
 /// disables TLS enforcement instead of failing loudly. Accepts `1`/`true`/`yes`
 /// and `0`/`false`/`no` (case-insensitive, trimmed); an unset var is `false`
-/// (the documented default); any other non-empty value is a startup error. See
+/// (the documented default); any other non-empty value is a startup error.
+/// `pub` (rather than module-private) so it can be unit tested directly without
+/// going through `Settings::from_env`'s real-environment-variable reads. See
 /// #142 review (CodeRabbit).
-fn parse_required_ssl_flag(raw: Option<String>) -> Result<bool, String> {
+pub fn parse_required_ssl_flag(raw: Option<String>) -> Result<bool, String> {
     match raw {
         None => Ok(false),
         Some(value) => match value.trim().to_lowercase().as_str() {
