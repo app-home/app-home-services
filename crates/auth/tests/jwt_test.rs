@@ -126,42 +126,80 @@ fn test_valid_token_with_iss_aud_validates() {
     assert_eq!(refresh_claims.aud, "app-home-services");
 }
 
+/// Builds a raw access-token JWT with an explicit `iss`/`aud` pair (rather than
+/// going through `JwtServiceImpl`, which always sets both to the same value),
+/// so `iss` and `aud` enforcement can be tested independently of each other.
+/// Always includes a valid `jti` so decoding never fails for a reason unrelated
+/// to the claim under test (see #87 / CodeRabbit review on PR #142).
+fn encode_access_token_with(secret: &str, iss: &str, aud: &str) -> String {
+    let now = chrono::Utc::now().timestamp() as usize;
+    let claims = serde_json::json!({
+        "sub": Uuid::now_v7(),
+        "jti": Uuid::now_v7(),
+        "iss": iss,
+        "aud": aud,
+        "exp": now + 900,
+        "iat": now,
+    });
+    jsonwebtoken::encode(
+        &Header::default(),
+        &claims,
+        &EncodingKey::from_secret(secret.as_bytes()),
+    )
+    .unwrap()
+}
+
 #[test]
-fn test_token_minted_for_other_environment_is_rejected() {
-    // A token minted against the same secret but a different issuer/audience
-    // (e.g. staging vs production) must be rejected -- the #87 cross-environment
-    // replay scenario.
-    let service = create_service();
-    let other = JwtServiceImpl::new(
-        "test-secret-key-that-is-long-enough-for-hmac",
-        15,
-        7,
-        "staging",
-        "staging",
-    );
-    let user_id = Uuid::now_v7();
-    let session_id = Uuid::now_v7();
+fn test_access_token_with_foreign_iss_is_rejected() {
+    // Correct aud, wrong iss -- isolates iss enforcement. A verifier that
+    // checks only aud would incorrectly accept this token.
+    let secret = "test-secret-key-that-is-long-enough-for-hmac";
+    let token = encode_access_token_with(secret, "staging", "app-home-services");
 
-    let pair = other.generate_token_pair(user_id, session_id).unwrap();
-
-    assert!(
-        service.validate_access_token(&pair.access_token).is_err(),
-        "access token with a foreign iss/aud must be rejected"
+    let verification = JwtVerification::new(
+        secret,
+        "app-home-services".to_string(),
+        "app-home-services".to_string(),
     );
+
+    let result: Option<AccessTokenClaims> = verification.decode(&token);
     assert!(
-        service.validate_refresh_token(&pair.refresh_token).is_err(),
-        "refresh token with a foreign iss/aud must be rejected"
+        result.is_none(),
+        "a token with a foreign iss must be rejected even when aud matches"
+    );
+}
+
+#[test]
+fn test_access_token_with_foreign_aud_is_rejected() {
+    // Correct iss, wrong aud -- isolates aud enforcement. A verifier that
+    // checks only iss would incorrectly accept this token.
+    let secret = "test-secret-key-that-is-long-enough-for-hmac";
+    let token = encode_access_token_with(secret, "app-home-services", "staging");
+
+    let verification = JwtVerification::new(
+        secret,
+        "app-home-services".to_string(),
+        "app-home-services".to_string(),
+    );
+
+    let result: Option<AccessTokenClaims> = verification.decode(&token);
+    assert!(
+        result.is_none(),
+        "a token with a foreign aud must be rejected even when iss matches"
     );
 }
 
 #[test]
 fn test_token_without_iss_aud_is_rejected() {
     // A legacy token signed with the correct secret but missing iss/aud (the
-    // pre-#87 format) must no longer validate.
+    // pre-#87 format) must no longer validate. `jti` is included (even though
+    // this predates #88 too) so a missing-jti decode failure can't be mistaken
+    // for the iss/aud rejection this test is actually checking.
     let secret = "test-secret-key-that-is-long-enough-for-hmac";
     let now = chrono::Utc::now().timestamp() as usize;
     let claims = serde_json::json!({
         "sub": Uuid::now_v7(),
+        "jti": Uuid::now_v7(),
         "exp": now + 900,
         "iat": now,
     });
