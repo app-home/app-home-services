@@ -54,6 +54,13 @@ pub async fn logout_handler(
             // natural expiry (see #88). TTL is the token's remaining lifetime.
             // Best-effort and fail-open: if the revocation list backend is
             // unavailable the session is still closed and logout still succeeds.
+            //
+            // TODO(#140): this fail-open behavior is exactly what's under review.
+            // A failed revoke() here currently still returns 200 OK to the
+            // client, so a possibly-compromised access token stays valid until
+            // its natural expiry even though the client believes it logged out.
+            // See #140 for the fail-closed vs. durable-retry decision; this
+            // branch/PR will implement whichever option is chosen there.
             let ttl_secs =
                 revocation_ttl_secs(auth_user.exp, chrono::Utc::now().timestamp() as usize);
             match blacklist.revoke(auth_user.jti, ttl_secs).await {
