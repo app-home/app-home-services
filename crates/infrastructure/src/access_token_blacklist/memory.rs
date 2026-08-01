@@ -29,6 +29,7 @@ pub struct MemoryAccessTokenBlacklist {
 }
 
 impl MemoryAccessTokenBlacklist {
+    /// Creates an empty blacklist with no revoked entries.
     pub fn new() -> Self {
         Self::default()
     }
@@ -38,10 +39,22 @@ impl MemoryAccessTokenBlacklist {
 impl AccessTokenBlacklist for MemoryAccessTokenBlacklist {
     async fn revoke(&self, jti: Uuid, ttl_secs: u64) -> Result<(), BlacklistError> {
         let mut entries = self.entries.lock().await;
+        let now = Instant::now();
+
+        // Opportunistic sweep: `is_revoked` only removes an entry when that exact
+        // `jti` is looked up again after it expires, but a client that logs out
+        // never presents the revoked token again, so most entries would
+        // otherwise never be queried -- and never removed. `revoke` is called on
+        // every logout, so pruning here (while the lock is already held) keeps
+        // `entries` bounded by the number of currently-valid revocations instead
+        // of growing by one permanent entry per logout for the life of the
+        // process (see #135).
+        entries.retain(|_, entry| now.duration_since(entry.revoked_at) < entry.ttl);
+
         entries.insert(
             jti,
             RevokedEntry {
-                revoked_at: Instant::now(),
+                revoked_at: now,
                 ttl: Duration::from_secs(ttl_secs),
             },
         );
