@@ -54,10 +54,28 @@ be reachable from inside your monitoring network/namespace, not exposed publicly
 
 ## The alert rules (`prometheus/alerts.yml`)
 
+Each metric has its own alert rule, in its own rule group:
+
 ```yaml
-expr: increase(rate_limiter_redis_errors_total[5m]) > 0
-expr: increase(access_token_blacklist_redis_errors_total[5m]) > 0
+groups:
+  - name: app-home-services-rate-limiter
+    rules:
+      - alert: RedisRateLimiterFailingOpen
+        expr: increase(rate_limiter_redis_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+  - name: app-home-services-access-token-blacklist
+    rules:
+      - alert: RedisAccessTokenBlacklistFailingOpen
+        expr: increase(access_token_blacklist_redis_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: warning
 ```
+
+(Trimmed to the structural parts; see `prometheus/alerts.yml` for the full
+`annotations` on each alert.)
 
 Both start at the same deliberately low `> 0` threshold (see below); the blacklist
 one is arguably the more important of the two to notice, since a failing-open

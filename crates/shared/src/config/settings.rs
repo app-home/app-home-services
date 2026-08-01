@@ -100,12 +100,22 @@ impl fmt::Debug for Settings {
     }
 }
 
-/// `sslmode` query parameter from a `postgres://`-style `DATABASE_URL`, or
-/// `None` when the URL omits it (sqlx then defaults to `prefer`, which tries
-/// TLS but silently falls back to plaintext).
+/// Canonical `sslmode` value from a `postgres://`-style `DATABASE_URL`, or
+/// `None` when the URL specifies neither (sqlx then defaults to `prefer`,
+/// which tries TLS but silently falls back to plaintext).
+///
+/// sqlx accepts both the `sslmode` key and the `ssl-mode` alias, and treats the
+/// value case-insensitively (`DISABLE`, `Disable`, and `disable` are all the
+/// same mode). This must match that exactly: a raw, case-sensitive, single-key
+/// comparison would let `sslmode=DISABLE` sail past `validate_database_ssl`, or
+/// `ssl-mode=disable` bypass it entirely by using the alias sqlx itself
+/// recognizes. Lowercased so every caller can compare against a plain
+/// lowercase literal. See #142 review (CodeRabbit).
 fn extract_sslmode(url: &Url) -> Option<String> {
     url.query_pairs()
-        .find_map(|(key, value)| (key == "sslmode").then(|| value.into_owned()))
+        .find_map(|(key, value)| {
+            (key == "sslmode" || key == "ssl-mode").then(|| value.to_lowercase())
+        })
 }
 
 /// Whether the database host is on the same machine as this process
@@ -148,17 +158,20 @@ pub fn validate_database_ssl(url: &str) -> Result<(), String> {
 /// Non-fatal warning for a connection that can silently fall back to plaintext
 /// against a non-loopback database host -- i.e. no `sslmode` (the sqlx default,
 /// `prefer`, tries TLS but falls back to plaintext if the server doesn't support
-/// it) or an explicit `prefer`. `sslmode=disable` is not reported here because
-/// the remote-host case is already rejected by `validate_database_ssl`. See #85.
+/// it), an explicit `prefer`, or `allow` (libpq/sqlx tries plaintext *first* and
+/// only upgrades to TLS if the server demands it -- the same plaintext-capable
+/// outcome as `prefer`, just with the attempt order reversed).
+/// `sslmode=disable` is not reported here because the remote-host case is
+/// already rejected by `validate_database_ssl`. See #85.
 pub fn database_ssl_warning(url: &str) -> Option<String> {
     let parsed = Url::parse(url).ok()?;
     if db_host_is_loopback(&parsed) {
         return None;
     }
     let sslmode = extract_sslmode(&parsed);
-    if sslmode.is_none() || sslmode.as_deref() == Some("prefer") {
+    if matches!(sslmode.as_deref(), None | Some("prefer") | Some("allow")) {
         return Some(format!(
-            "DATABASE_URL targets a non-loopback database host ({:?}) without `sslmode=verify-full`; the default (`prefer`) silently falls back to plaintext if the server doesn't support TLS. Use `?sslmode=verify-full` or set DB_REQUIRE_SSL=true.",
+            "DATABASE_URL targets a non-loopback database host ({:?}) without `sslmode=verify-full`; the default (`prefer`) silently falls back to plaintext if the server doesn't support TLS, and `allow` tries plaintext first. Use `?sslmode=verify-full` or set DB_REQUIRE_SSL=true.",
             parsed.host_str()
         ));
     }
@@ -166,16 +179,17 @@ pub fn database_ssl_warning(url: &str) -> Option<String> {
 }
 
 /// Rewrites a `DATABASE_URL` so it always connects with `sslmode=verify-full`,
-/// replacing any existing `sslmode` value (including `disable`). Used when
-/// `DB_REQUIRE_SSL=true` to make the "always encrypt and verify" requirement
-/// effective regardless of what the connection string itself says. See #85.
+/// replacing any existing `sslmode`/`ssl-mode` value (including `disable`, in
+/// either key spelling or casing). Used when `DB_REQUIRE_SSL=true` to make the
+/// "always encrypt and verify" requirement effective regardless of what the
+/// connection string itself says. See #85.
 pub fn force_sslmode_verify_full(url: &str) -> Result<String, String> {
     let mut parsed =
         Url::parse(url).map_err(|e| format!("DATABASE_URL is not a valid URL: {e}"))?;
 
     let remaining: Vec<(String, String)> = parsed
         .query_pairs()
-        .filter(|(key, _)| key != "sslmode")
+        .filter(|(key, _)| key != "sslmode" && key != "ssl-mode")
         .map(|(key, value)| (key.into_owned(), value.into_owned()))
         .collect();
 
@@ -212,7 +226,11 @@ impl Settings {
 
         validate_database_ssl(&database_url)?;
         if let Some(warning) = database_ssl_warning(&database_url) {
-            eprintln!("WARN: {warning}");
+            // init_logging() runs before Settings::from_env() in main.rs, and
+            // every other startup diagnostic goes through tracing -- route this
+            // one the same way so it isn't the one line that bypasses structured
+            // logging, log levels, and any log-based alerting built on it.
+            tracing::warn!("{warning}");
         }
 
         Ok(Self {

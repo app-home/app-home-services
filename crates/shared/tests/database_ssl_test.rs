@@ -52,6 +52,33 @@ fn rejects_sslmode_disable_against_a_remote_ip() {
 }
 
 #[test]
+fn rejects_uppercase_sslmode_disable_against_a_remote_host() {
+    // sqlx treats sslmode case-insensitively (DISABLE == disable), so the
+    // validator must too, or an uppercase value would sail straight through.
+    let result =
+        validate_database_ssl("postgresql://user:pass@db.internal:5432/apphome?sslmode=DISABLE");
+
+    assert!(
+        result.is_err(),
+        "sslmode=DISABLE (any casing) against a remote host must be a fatal startup error, got {result:?}"
+    );
+}
+
+#[test]
+fn rejects_ssl_dash_mode_disable_alias_against_a_remote_host() {
+    // sqlx also accepts `ssl-mode` as an alias for `sslmode`. Using the alias
+    // must not be a way to bypass validation.
+    let result = validate_database_ssl(
+        "postgresql://user:pass@db.internal:5432/apphome?ssl-mode=disable",
+    );
+
+    assert!(
+        result.is_err(),
+        "ssl-mode=disable (the sqlx alias) against a remote host must be a fatal startup error, got {result:?}"
+    );
+}
+
+#[test]
 fn accepts_tls_modes_against_remote_hosts() {
     for sslmode in ["require", "verify-ca", "verify-full"] {
         let result = validate_database_ssl(&format!(
@@ -110,6 +137,32 @@ fn warns_when_remote_host_has_sslmode_prefer() {
     assert!(
         warning.is_some(),
         "sslmode=prefer against a remote host must produce a warning"
+    );
+}
+
+#[test]
+fn warns_when_remote_host_has_sslmode_allow() {
+    // `allow` tries plaintext first and only upgrades to TLS if the server
+    // demands it -- same plaintext-capable outcome as `prefer`, just with the
+    // attempt order reversed, so it must warn too. See #142 review.
+    let warning =
+        database_ssl_warning("postgresql://user:pass@db.internal:5432/apphome?sslmode=allow")
+            .expect("sslmode=allow against a remote host must produce a warning");
+
+    assert!(
+        warning.contains("`allow` tries plaintext first"),
+        "warning should specifically call out the allow-mode risk, got {warning:?}"
+    );
+}
+
+#[test]
+fn warns_when_remote_host_has_uppercase_sslmode_allow() {
+    let warning =
+        database_ssl_warning("postgresql://user:pass@db.internal:5432/apphome?sslmode=ALLOW");
+
+    assert!(
+        warning.is_some(),
+        "sslmode=ALLOW (any casing) against a remote host must produce a warning"
     );
 }
 
@@ -177,6 +230,36 @@ fn replaces_an_existing_sslmode_value() {
             "original {original:?} should have been rewritten, got {pairs:?}"
         );
     }
+}
+
+#[test]
+fn replaces_an_existing_ssl_dash_mode_alias() {
+    // The rewrite must strip the ssl-mode alias too, or DB_REQUIRE_SSL=true
+    // could leave both `ssl-mode=disable` and a new `sslmode=verify-full` on
+    // the URL at once.
+    let rewritten =
+        force_sslmode_verify_full("postgresql://user:pass@db.internal/apphome?ssl-mode=disable")
+            .unwrap();
+
+    let parsed = url::Url::parse(&rewritten).unwrap();
+    let pairs: Vec<(String, String)> = parsed
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+
+    assert!(
+        !pairs.iter().any(|(key, _)| key == "ssl-mode"),
+        "the ssl-mode alias must be removed, got {pairs:?}"
+    );
+    assert_eq!(
+        pairs
+            .iter()
+            .filter(|(key, _)| key == "sslmode")
+            .collect::<Vec<_>>()
+            .len(),
+        1,
+        "rewritten URL must contain exactly one sslmode parameter, got {pairs:?}"
+    );
 }
 
 #[test]
