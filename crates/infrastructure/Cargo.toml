@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 shared = { path = "../shared" }
-sqlx = { version = "0.9", features = ["postgres", "uuid", "runtime-tokio"] }
+sqlx = { version = "0.9", features = ["postgres", "uuid", "runtime-tokio", "tls-rustls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 metrics-exporter-prometheus = "0.18"
