@@ -38,12 +38,20 @@ impl JwtVerification {
         }
     }
 
-    /// Validation requiring HS256 and the configured `iss`/`aud` claims. `exp`
-    /// is required and checked by `jsonwebtoken`'s defaults.
+    /// Validation requiring HS256 and the configured `iss`/`aud` claims.
+    /// `exp`, `iss`, and `aud` are all explicitly listed in
+    /// `set_required_spec_claims`, so a token that omits any of them is
+    /// rejected as a missing-claim error rather than relying on
+    /// `jsonwebtoken`'s own default (`exp` only) to keep catching the other
+    /// two -- this is defense-in-depth against that default ever changing
+    /// out from under `set_issuer`/`set_audience`'s value checks, not a
+    /// behavior change: a token without `iss`/`aud` was already rejected
+    /// (see `crates/auth/tests/jwt_test.rs`).
     pub fn validation(&self) -> Validation {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_issuer(&[&self.issuer]);
         validation.set_audience(&[&self.audience]);
+        validation.set_required_spec_claims(&["exp", "iss", "aud"]);
         validation
     }
 
