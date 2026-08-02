@@ -40,7 +40,12 @@ the rate limiter counter.
 
 Since #140, revocations that Redis rejects are journaled in Postgres
 (`access_token_revocation_outbox`) and retried by a background flush worker, so a
-Redis outage can delay -- but never silently drop -- a logout's revocation. The
+Redis outage can delay -- but, after a successful Postgres journal write, not
+silently drop -- a logout's revocation. That guarantee has one gap: if Redis and
+Postgres are unavailable at the same time, there is nowhere to journal the
+revocation either, and it is lost the same way it would have been before #140 (the
+token stays valid until its natural expiry; see `DurableRevocationBlacklist::revoke`
+and `journal` in `crates/infrastructure`, which log this case at `error`). The
 worker republishes the current backlog on every sweep (default every 5 seconds,
 see `REVOCATION_FLUSH_INTERVAL_SECONDS`) as:
 

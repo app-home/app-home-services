@@ -156,14 +156,20 @@ async fn extractor_rejects_expired_token() {
     // before the blacklist is ever consulted -- expiry and revocation are
     // independent rejection paths, and only the latter is exercised by the
     // tests above.
+    //
+    // `exp` is set 120s in the past, not 60s: jsonwebtoken's `Validation`
+    // applies a default 60-second leeway around `exp`, so a token exactly 60s
+    // expired would sit right on that boundary and could pass or fail
+    // depending on the exact instant `now` is captured vs. when `decode` runs.
+    // 120s clears the leeway with margin.
     let now = chrono::Utc::now().timestamp() as usize;
     let claims = serde_json::json!({
         "sub": Uuid::now_v7(),
         "jti": Uuid::now_v7(),
         "iss": ISSUER_AUDIENCE,
         "aud": ISSUER_AUDIENCE,
-        "exp": now - 60,
-        "iat": now - 960,
+        "exp": now - 120,
+        "iat": now - 1020,
     });
     let token = jsonwebtoken::encode(
         &jsonwebtoken::Header::default(),

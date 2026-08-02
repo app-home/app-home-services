@@ -17,7 +17,7 @@
 DROP INDEX IF EXISTS access_token_revocation_outbox_expires_at_idx;
 
 ALTER TABLE access_token_revocation_outbox
-    ADD COLUMN expires_at TIMESTAMPTZ;
+    ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;
 
 -- Backfill for rows journaled under the pre-expires_at schema.
 UPDATE access_token_revocation_outbox
@@ -27,5 +27,5 @@ UPDATE access_token_revocation_outbox
 ALTER TABLE access_token_revocation_outbox
     ALTER COLUMN expires_at SET NOT NULL;
 
-CREATE INDEX access_token_revocation_outbox_expires_at_idx
+CREATE INDEX IF NOT EXISTS access_token_revocation_outbox_expires_at_idx
     ON access_token_revocation_outbox (expires_at);

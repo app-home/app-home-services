@@ -44,10 +44,13 @@ groups:
       - alert: AccessTokenRevocationBacklogAccumulating
         # A backlog here means revocations journaled in Postgres (see #140)
         # are not landing in Redis: Redis has been down long enough for the
-        # flush worker to fall behind. This is not an emergency by itself (the
-        # journal guarantees they'll eventually be flushed), but it is a
-        # signal that the "failing open" posture is actively in effect for
-        # logged-out tokens, so it's worth a pager for as long as it persists.
+        # flush worker to fall behind. This is not an emergency by itself --
+        # each backlogged row was already successfully journaled, so it will
+        # be flushed once Redis recovers, PROVIDED Postgres stays up in the
+        # meantime (a simultaneous Postgres outage is a separate, more severe
+        # situation this alert does not cover -- see docs/alerting.md). Still
+        # worth a pager for as long as it persists: it's a live signal that the
+        # "failing open" posture is actively in effect for logged-out tokens.
         expr: access_token_revocation_outbox_pending > 0
         for: 5m
         labels:

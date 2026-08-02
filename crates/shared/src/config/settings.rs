@@ -251,6 +251,17 @@ pub fn parse_required_ssl_flag(raw: Option<String>) -> Result<bool, String> {
 }
 
 impl Settings {
+    /// Builds `Settings` from process environment variables, applying defaults
+    /// for everything optional (see each field's own doc comment for its
+    /// default and env var name).
+    ///
+    /// Returns `Err` for: a missing required var (`DATABASE_URL`), a value that
+    /// fails to parse as its target type (e.g. a non-numeric `SERVER_PORT`), an
+    /// invalid `DB_REQUIRE_SSL` value (see `parse_required_ssl_flag`), or a
+    /// `DATABASE_URL` that fails the plaintext-over-the-network guard (see
+    /// `validate_database_ssl`). A non-fatal SSL configuration issue (see
+    /// `database_ssl_warning`) is logged via `tracing::warn!` rather than
+    /// returned as an error.
     pub fn from_env() -> Result<Self, String> {
         let db_require_ssl = parse_required_ssl_flag(std::env::var("DB_REQUIRE_SSL").ok())?;
 
