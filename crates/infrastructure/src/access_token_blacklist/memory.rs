@@ -83,12 +83,11 @@ impl AccessTokenBlacklist for MemoryAccessTokenBlacklist {
     }
 
     async fn is_revoked(&self, jti: Uuid) -> Result<bool, BlacklistError> {
-        let now = Instant::now();
-
         // Fast path: a shared read lock covers both common outcomes (revoked and
         // still valid, or never revoked at all) without blocking any other
         // concurrent reader.
         {
+            let now = Instant::now();
             let entries = self.entries.read().await;
             match entries.get(&jti) {
                 Some(entry) if now.duration_since(entry.revoked_at) < entry.ttl => {
@@ -99,10 +98,22 @@ impl AccessTokenBlacklist for MemoryAccessTokenBlacklist {
             }
         }
 
-        // Slow path: the entry exists but its TTL has elapsed. Only this branch
-        // needs exclusive access, to actually remove the stale entry.
+        // Slow path: the entry was expired under the read lock above. Re-check
+        // under the write lock rather than assuming it's still the same stale
+        // entry: another task may have called `revoke()` for this exact `jti`
+        // (refreshing it with a new TTL) in the window between us releasing the
+        // read lock and acquiring the write lock. Blindly removing here would
+        // silently un-revoke a token someone just re-revoked. See #142 review
+        // (CodeRabbit).
+        let now = Instant::now();
         let mut entries = self.entries.write().await;
-        entries.remove(&jti);
-        Ok(false)
+        match entries.get(&jti) {
+            Some(entry) if now.duration_since(entry.revoked_at) < entry.ttl => Ok(true),
+            Some(_) => {
+                entries.remove(&jti);
+                Ok(false)
+            }
+            None => Ok(false),
+        }
     }
 }
