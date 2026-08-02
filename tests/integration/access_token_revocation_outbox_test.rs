@@ -20,35 +20,11 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
 
 use app_home_services::infrastructure::access_token_blacklist::durable::DurableRevocationBlacklist;
 use shared::ports::{AccessTokenBlacklist, BlacklistError};
-use sqlx::{PgPool, postgres::PgPoolOptions};
-use tokio::sync::OnceCell;
+use sqlx::PgPool;
 use uuid::Uuid;
-
-// A single, shared pool for every test in this file -- same rationale as
-// `database_test.rs`: opening a brand new PgPool per test is slow and flaky over
-// the extra hop a Podman VM on Windows adds.
-static POOL: OnceCell<PgPool> = OnceCell::const_new();
-
-async fn get_test_pool() -> &'static PgPool {
-    POOL.get_or_init(|| async {
-        let database_url =
-            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
-        // `test_before_acquire` + a short `idle_timeout`: connections that the
-        // Podman VM quietly drops while idle would otherwise be handed to the
-        // next test already-dead, hanging its acquire until the 30s timeout.
-        PgPoolOptions::new()
-            .test_before_acquire(true)
-            .idle_timeout(Duration::from_secs(30))
-            .connect(&database_url)
-            .await
-            .expect("Failed to connect to database")
-    })
-    .await
-}
 
 async fn outbox_count(pool: &PgPool, jti: Uuid) -> i64 {
     sqlx::query_scalar("SELECT COUNT(*) FROM access_token_revocation_outbox WHERE jti = $1")
@@ -118,7 +94,7 @@ impl AccessTokenBlacklist for MockBackend {
 #[ignore]
 fn revoke_journals_when_inner_fails() {
     crate::integration::test_runtime().block_on(async {
-        let pool = get_test_pool().await;
+        let pool = crate::integration::test_pool().await;
         let _table_guard = crate::integration::outbox_table_guard().await;
         crate::integration::clean_outbox(pool).await;
         let mock = Arc::new(MockBackend::default());
@@ -148,7 +124,7 @@ fn revoke_journals_when_inner_fails() {
 #[ignore]
 fn is_revoked_rejects_journaled_jti_immediately() {
     crate::integration::test_runtime().block_on(async {
-        let pool = get_test_pool().await;
+        let pool = crate::integration::test_pool().await;
         let _table_guard = crate::integration::outbox_table_guard().await;
         crate::integration::clean_outbox(pool).await;
         let mock = Arc::new(MockBackend::default());
@@ -169,7 +145,7 @@ fn is_revoked_rejects_journaled_jti_immediately() {
 #[ignore]
 fn flush_clears_row_once_inner_recovers() {
     crate::integration::test_runtime().block_on(async {
-        let pool = get_test_pool().await;
+        let pool = crate::integration::test_pool().await;
         let _table_guard = crate::integration::outbox_table_guard().await;
         crate::integration::clean_outbox(pool).await;
         let mock = Arc::new(MockBackend::default());
@@ -205,7 +181,7 @@ fn flush_clears_row_once_inner_recovers() {
 #[ignore]
 fn flush_keeps_row_while_inner_still_down() {
     crate::integration::test_runtime().block_on(async {
-        let pool = get_test_pool().await;
+        let pool = crate::integration::test_pool().await;
         let _table_guard = crate::integration::outbox_table_guard().await;
         crate::integration::clean_outbox(pool).await;
         let mock = Arc::new(MockBackend::default());
@@ -238,7 +214,7 @@ fn flush_keeps_row_while_inner_still_down() {
 #[ignore]
 fn flush_drops_expired_row_without_revoking_inner() {
     crate::integration::test_runtime().block_on(async {
-        let pool = get_test_pool().await;
+        let pool = crate::integration::test_pool().await;
         let _table_guard = crate::integration::outbox_table_guard().await;
         crate::integration::clean_outbox(pool).await;
         let mock = Arc::new(MockBackend::default());
