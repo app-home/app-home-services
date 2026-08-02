@@ -32,35 +32,18 @@ use std::time::Duration;
 use app_home_services::infrastructure::access_token_blacklist::durable::DurableRevocationBlacklist;
 use app_home_services::infrastructure::access_token_blacklist::redis::RedisAccessTokenBlacklist;
 use shared::ports::AccessTokenBlacklist;
-use sqlx::{PgPool, postgres::PgPoolOptions};
-use tokio::sync::OnceCell;
 use uuid::Uuid;
 
 static NEXT_CONTAINER_ID: AtomicU32 = AtomicU32::new(0);
 
-// Shared Postgres pool for the durable-revocation tests below -- same rationale
-// as `database_test.rs` (opening a PgPool per test is slow and flaky over a
-// Podman VM hop).
-static POOL: OnceCell<PgPool> = OnceCell::const_new();
-
-async fn get_test_pool() -> &'static PgPool {
-    POOL.get_or_init(|| async {
-        let database_url =
-            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
-        // `test_before_acquire` + a short `idle_timeout`: connections that the
-        // Podman VM quietly drops while idle would otherwise be handed to the
-        // next test already-dead, hanging its acquire until the 30s timeout.
-        PgPoolOptions::new()
-            .test_before_acquire(true)
-            .idle_timeout(Duration::from_secs(30))
-            .connect(&database_url)
-            .await
-            .expect("Failed to connect to database")
-    })
-    .await
-}
-
 fn find_free_port() -> u16 {
+    // Inherently racy: nothing stops another process (or another test in this
+    // same run -- `NEXT_CONTAINER_ID` only dedupes container *names*, not ports)
+    // from binding this exact port between us closing the listener and podman
+    // publishing it. Acceptable here because the window is very short and a
+    // collision fails fast and loud (`podman run` errors immediately on an
+    // already-bound host port) rather than silently misbehaving; a flaky
+    // failure here is rare enough in practice not to be worth a retry loop.
     TcpListener::bind(("127.0.0.1", 0))
         .expect("failed to bind to an ephemeral port to find a free one")
         .local_addr()
@@ -114,6 +97,16 @@ impl RedisTestContainer {
     }
 
     fn wait_until_ready(&self) {
+        // Spawns a plain OS thread (not a nested `#[tokio::test]` runtime) running
+        // its own throwaway single-threaded `tokio::runtime::Runtime` for each
+        // connection attempt, rather than reusing this test's own async context.
+        // A single `redis::Client::get_connection_manager().await` call that
+        // simply times out (Redis not accepting connections yet) would otherwise
+        // block the calling test's own runtime for the same duration; running it
+        // on its own thread+runtime, joined with `.join()` below, keeps a stuck
+        // attempt from stalling the polling loop itself, at the cost of one OS
+        // thread per retry (poll interval is 300ms, so this is a handful of
+        // threads total, not a leak).
         let addr = self.url();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
 
@@ -203,7 +196,7 @@ async fn revocation_does_not_leak_between_tokens() {
 fn durable_revocation_fast_path_does_not_journal() {
     crate::integration::test_runtime().block_on(async {
         let container = RedisTestContainer::start();
-        let pool = get_test_pool().await;
+        let pool = crate::integration::test_pool().await;
         let _table_guard = crate::integration::outbox_table_guard().await;
         crate::integration::clean_outbox(pool).await;
         let redis = RedisAccessTokenBlacklist::connect(&container.url())
@@ -234,7 +227,7 @@ fn durable_revocation_fast_path_does_not_journal() {
 fn flush_pending_lands_journaled_revocation_in_redis() {
     crate::integration::test_runtime().block_on(async {
         let container = RedisTestContainer::start();
-        let pool = get_test_pool().await;
+        let pool = crate::integration::test_pool().await;
         let _table_guard = crate::integration::outbox_table_guard().await;
         crate::integration::clean_outbox(pool).await;
         let redis = RedisAccessTokenBlacklist::connect(&container.url())
