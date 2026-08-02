@@ -25,7 +25,11 @@ CREATE TABLE IF NOT EXISTS access_token_revocation_outbox (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- FIFO sweep order for the flush worker, and a way to cheaply find rows whose
--- `created_at + ttl_secs` has already elapsed without scanning the whole table.
+-- FIFO sweep order for the flush worker's SELECT ... ORDER BY created_at LIMIT.
 CREATE INDEX IF NOT EXISTS access_token_revocation_outbox_created_at_idx
     ON access_token_revocation_outbox (created_at);
+
+-- The expiry sweep's index lives on the `expires_at` column added in migration
+-- 010. It cannot index `created_at + ttl_secs * INTERVAL '1 second'` directly:
+-- `timestamptz + interval` is STABLE, not IMMUTABLE, so Postgres rejects an
+-- expression index on it with 42P17.

@@ -379,6 +379,14 @@ fn spawn_access_token_revocation_flusher(
 ) {
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
+        // Default (Burst) replays every missed tick back-to-back with no delay
+        // between them if a sweep ever runs longer than the interval. A large
+        // outbox backlog is exactly the condition that makes a long sweep
+        // likely, so Burst would pile consecutive sweeps against Postgres/Redis
+        // right when they're already under the most load. Delay instead waits a
+        // full interval after each sweep before the next one, regardless of how
+        // long that sweep took.
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
             interval.tick().await;
 

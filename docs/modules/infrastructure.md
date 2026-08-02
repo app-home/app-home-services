@@ -121,7 +121,7 @@ The flush worker (spawned in `main.rs`, every `REVOCATION_FLUSH_INTERVAL_SECONDS
 | `TRUSTED_PROXY_IPS` | (empty) | Comma-separated IPs for X-Forwarded-For trust |
 | `METRICS_ALLOWED_IPS` | (empty) | Comma-separated IPs allowed to reach `/metrics`; empty = no restriction; loopback always allowed |
 | `ENABLE_SWAGGER` | `false` | Serve `/swagger-ui` and `/api-docs/openapi.json`; disabled by default so the API surface is not exposed (see #86) |
-| `REDIS_URL` | (optional) | If set, uses `RedisRateLimiter`; unset = `MemoryRateLimiter` |
+| `REDIS_URL` | (optional) | Selects the shared/multi-instance backend for three independent things: `RedisRateLimiter` (vs. `MemoryRateLimiter`), `RedisAccessTokenBlacklist` wrapped in `DurableRevocationBlacklist` (vs. `MemoryAccessTokenBlacklist`), and whether the durable-revocation flush worker is spawned at all (it's a no-op on the in-memory blacklist, which never journals). Unset selects the in-memory backend for all three (single instance only). |
 | `REVOCATION_FLUSH_INTERVAL_SECONDS` | `5` | Flush-worker sweep interval for the durable-revocation outbox (#140); only meaningful when `REDIS_URL` is set |
 
 ## Integration

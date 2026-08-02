@@ -276,6 +276,8 @@ For the other bounded contexts, see:
 | `006_create_user_profiles_table.sql` | User profiles table for the profiles context |
 | `007_add_role_to_users.sql` | Adds `role` column (`user` / `admin`) to users table (superseded by 008) |
 | `008_create_admin_user_roles.sql` | Moves `role` into its own `user_roles` table owned by the admin context; drops `users.role` |
+| `009_create_access_token_revocation_outbox.sql` | Durable-retry outbox for access token revocations Redis rejects (see #140) |
+| `010_access_token_revocation_outbox_expires_at.sql` | Adds the indexed `expires_at` column the outbox expiry sweep uses (`timestamptz + interval` can't be indexed directly) |
 
 Migrations run automatically on startup.
 
@@ -371,6 +373,7 @@ This does not require credentials, so it should still only be reachable from ins
 | Metric | Type | Labels | Description |
 | -------- | ------ | -------- | ------------- |
 | `rate_limiter_redis_errors_total` | Counter | `scope="login"` \| `scope="refresh"` | Cumulative count of Redis errors encountered by the rate limiter (i.e. every time it failed open and allowed a request through instead of enforcing the limit). Absent/zero when running on the in-memory backend (`REDIS_URL` unset), since that backend has no equivalent failure mode. Resets to 0 on process restart. Polled from the rate limiter's internal counter and republished every 15 seconds. |
+| `access_token_blacklist_redis_errors_total` | Counter | — | Cumulative count of Redis errors encountered by the access-token revocation list (i.e. every time it failed open and treated an unrevoked-or-unknown token as valid instead of enforcing revocation). Absent/zero on the in-memory backend (`REDIS_URL` unset). Resets to 0 on process restart. Polled and republished every 15 seconds, same cadence as the rate limiter counter. |
 | `access_token_revocation_outbox_pending` | Gauge | — | Number of journaled access-token revocations not yet flushed to Redis (rows currently in `access_token_revocation_outbox`). Only meaningful on the Redis blacklist backend (`REDIS_URL` set); the in-memory backend never journals, so this stays at 0. Republished by the durable-revocation flush worker on every sweep (see `REVOCATION_FLUSH_INTERVAL_SECONDS`). Sustained non-zero is a sign Redis has been down long enough to accumulate a backlog -- see `docs/alerting.md`. |
 
 ### Scraping
@@ -399,9 +402,13 @@ METRICS_ALLOWED_IPS=10.0.0.5,10.0.0.6
 
 ### Alerting
 
-An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limiter_redis_errors_total` increases at all within a 5-minute window. The threshold starts deliberately low (`> 0`) since there's no baseline yet for what "normal" transient Redis noise looks like in this deployment -- see [`docs/alerting.md`](docs/alerting.md) for the full reasoning and a concrete process for raising the threshold once you have a couple of weeks of real data.
+Example alert rules live in `prometheus/alerts.yml`:
 
-A second rule fires when the durable-revocation backlog (`access_token_revocation_outbox_pending`) stays above 0 for 5 minutes, which means journaled revocations are accumulating because Redis has been down -- see [`docs/alerting.md`](docs/alerting.md).
+- **`RedisRateLimiterFailingOpen`** (`severity: warning`) fires when `rate_limiter_redis_errors_total` increases at all within a 5-minute window.
+- **`RedisAccessTokenBlacklistFailingOpen`** (`severity: critical`) fires the same way on `access_token_blacklist_redis_errors_total` -- rated a notch above the rate-limiter alert because a failing-open revocation list means a token the user explicitly revoked keeps working, not just a weakened brute-force defense.
+- **`AccessTokenRevocationBacklogAccumulating`** (`severity: warning`) fires when the durable-revocation backlog (`access_token_revocation_outbox_pending`) stays above 0 for 5 minutes straight, meaning journaled revocations are accumulating because Redis has been down.
+
+The two error-counter alerts start deliberately low (`> 0`) since there's no baseline yet for what "normal" transient Redis noise looks like in this deployment -- see [`docs/alerting.md`](docs/alerting.md) for the full reasoning and a concrete process for raising the threshold once you have a couple of weeks of real data.
 
 ## Security
 

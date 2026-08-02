@@ -73,7 +73,7 @@ be reachable from inside your monitoring network/namespace, not exposed publicly
 
 ## The alert rules (`prometheus/alerts.yml`)
 
-Each metric has its own alert rule, in its own rule group:
+Each metric has its own alert rule; related alerts can share a rule group:
 
 ```yaml
 groups:
@@ -90,7 +90,7 @@ groups:
         expr: increase(access_token_blacklist_redis_errors_total[5m]) > 0
         for: 1m
         labels:
-          severity: warning
+          severity: critical
       - alert: AccessTokenRevocationBacklogAccumulating
         expr: access_token_revocation_outbox_pending > 0
         for: 5m
@@ -101,11 +101,11 @@ groups:
 (Trimmed to the structural parts; see `prometheus/alerts.yml` for the full
 `annotations` on each alert.)
 
-Both error-counter alerts start at the same deliberately low `> 0` threshold (see
-below); the blacklist one is arguably the more important of the two to notice,
-since a failing-open revocation list is a security degradation (revoked tokens
-keep working), while a failing-open rate limiter is only a brute-force defense
-weakening.
+The blacklist error-counter alert is `severity: critical`, one notch above the
+rate limiter's `warning`: a failing-open revocation list means a token the user
+explicitly revoked (e.g. after a suspected compromise) keeps working, not just a
+weakened brute-force defense. Both still start at the same deliberately low `> 0`
+threshold (see below).
 
 The third alert (`AccessTokenRevocationBacklogAccumulating`) is different in
 kind: it doesn't fire on a blip, it fires on a *sustained* `> 0` outbox backlog

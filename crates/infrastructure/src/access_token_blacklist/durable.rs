@@ -20,6 +20,14 @@ struct PendingEntry {
     ttl: Duration,
 }
 
+/// Number of outbox rows retried against the inner backend per `flush_pending`
+/// sweep. During a long Redis outage the backlog grows with every logout; an
+/// unbounded `SELECT` would load (and a per-row `DELETE` loop would then churn
+/// through) the entire backlog in one sweep, holding a pool connection and
+/// issuing one Redis round-trip per row for however long that takes. Batching
+/// caps a single sweep's cost and cedes the rest to the next tick.
+const FLUSH_BATCH_SIZE: i64 = 500;
+
 /// Wraps a revocation list backend (in practice `RedisAccessTokenBlacklist`) with
 /// Postgres journaling, so a revocation that the backend rejects at logout time is
 /// not silently lost (see #140).
@@ -41,9 +49,11 @@ struct PendingEntry {
 /// `is_revoked` checks the in-process pending set first, so a token whose
 /// revocation is journaled-but-unflushed is rejected by *this* instance
 /// immediately, without waiting for the flush. Other instances reject it once the
-/// flush worker lands it in Redis (within one flush interval) -- an inherent
-/// eventual-consistency window, strictly better than the pre-#140 behavior where a
-/// Redis outage dropped the revocation entirely.
+/// flush lands it in Redis -- an inherent eventual-consistency window that lasts
+/// as long as Redis is actually unreachable, plus at most one flush interval
+/// after it recovers (the next scheduled sweep is what notices Redis is back and
+/// lands the row) -- strictly better than the pre-#140 behavior where a Redis
+/// outage dropped the revocation entirely.
 pub struct DurableRevocationBlacklist {
     inner: Arc<dyn AccessTokenBlacklist>,
     pool: PgPool,
@@ -72,7 +82,8 @@ impl DurableRevocationBlacklist {
     /// still down) must not replace or duplicate the original row.
     async fn journal(&self, jti: Uuid, ttl_secs: u64) -> Result<(), BlacklistError> {
         match sqlx::query(
-            "INSERT INTO access_token_revocation_outbox (jti, ttl_secs) VALUES ($1, $2)
+            "INSERT INTO access_token_revocation_outbox (jti, ttl_secs, expires_at)
+             VALUES ($1, $2, NOW() + ($2 * INTERVAL '1 second'))
              ON CONFLICT (jti) DO NOTHING",
         )
         .bind(jti)
@@ -92,8 +103,11 @@ impl DurableRevocationBlacklist {
         }
     }
 
-    /// Retries every journaled revocation against the inner backend and returns
-    /// how many still could not be flushed (the current outbox backlog).
+    /// Retries a bounded batch of journaled revocations against the inner backend
+    /// and returns how many still could not be flushed (the current outbox
+    /// backlog *from this batch* -- see `FLUSH_BATCH_SIZE`'s docs on why a full
+    /// backlog count needs a separate `SELECT COUNT(*)` if that's ever needed for
+    /// the gauge instead of just "there's still work to do").
     ///
     /// Called on an interval by the flush worker spawned from `main` (first tick
     /// fires immediately, so a backlog that accumulated while the process was
@@ -105,30 +119,31 @@ impl DurableRevocationBlacklist {
         // Rows whose token lifetime has already elapsed have nothing left to
         // revoke -- the token can't validate anymore -- so drop them without a
         // Redis round-trip. Doing it in SQL avoids decoding the timestamp in
-        // Rust (see migration 009).
-        sqlx::query(
-            "DELETE FROM access_token_revocation_outbox
-             WHERE created_at + (ttl_secs * INTERVAL '1 second') <= NOW()",
-        )
-        .execute(&self.pool)
-        .await?;
+        // Rust (see migrations 009/010, which store it as the indexed
+        // `expires_at` column). Unbounded on purpose: it's a single indexed
+        // DELETE, not a per-row Redis round-trip, so it doesn't need batching.
+        sqlx::query("DELETE FROM access_token_revocation_outbox WHERE expires_at <= NOW()")
+            .execute(&self.pool)
+            .await?;
 
         let rows: Vec<(Uuid, i64)> = sqlx::query_as(
-            "SELECT jti, ttl_secs FROM access_token_revocation_outbox ORDER BY created_at",
+            "SELECT jti, ttl_secs FROM access_token_revocation_outbox
+             ORDER BY created_at LIMIT $1",
         )
+        .bind(FLUSH_BATCH_SIZE)
         .fetch_all(&self.pool)
         .await?;
 
         // The loop below awaits the inner backend for each row, so the pending
         // set lock is NOT held across it -- an `is_revoked` check during a long
         // sweep must not stall behind a slow Redis.
-        let mut flushed: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
+        let mut flushed: Vec<Uuid> = Vec::new();
         let mut remaining = 0usize;
 
         for (jti, ttl_secs) in rows {
             match self.inner.revoke(jti, ttl_secs as u64).await {
                 Ok(()) => {
-                    flushed.insert(jti);
+                    flushed.push(jti);
                 }
                 Err(BlacklistError) => {
                     // Redis is still down; keep the row so the next sweep retries
@@ -138,18 +153,17 @@ impl DurableRevocationBlacklist {
             }
         }
 
-        for jti in &flushed {
-            sqlx::query("DELETE FROM access_token_revocation_outbox WHERE jti = $1")
-                .bind(jti)
+        if !flushed.is_empty() {
+            sqlx::query("DELETE FROM access_token_revocation_outbox WHERE jti = ANY($1)")
+                .bind(&flushed)
                 .execute(&self.pool)
                 .await?;
-        }
 
-        if !flushed.is_empty() {
             let now = Instant::now();
+            let flushed_set: std::collections::HashSet<Uuid> = flushed.into_iter().collect();
             let mut pending = self.pending.lock().await;
             pending.retain(|jti, entry| {
-                !flushed.contains(jti) && now.duration_since(entry.added_at) < entry.ttl
+                !flushed_set.contains(jti) && now.duration_since(entry.added_at) < entry.ttl
             });
         }
 
@@ -196,16 +210,27 @@ impl AccessTokenBlacklist for DurableRevocationBlacklist {
 
     async fn is_revoked(&self, jti: Uuid) -> Result<bool, BlacklistError> {
         let now = Instant::now();
-        let mut pending = self.pending.lock().await;
-        match pending.get(&jti) {
-            Some(entry) if now.duration_since(entry.added_at) < entry.ttl => return Ok(true),
-            Some(_) => {
-                // Expired pending entry: nothing durable to back it anymore,
-                // fall through to the inner backend like any other token.
-                pending.remove(&jti);
+
+        // Scoped so the lock guard is dropped before the inner-backend await
+        // below: `is_revoked` runs on every authenticated request, and holding
+        // this mutex across a Redis round-trip would serialize every concurrent
+        // request behind whichever one happens to be waiting on Redis. See #142
+        // review (CodeRabbit).
+        {
+            let mut pending = self.pending.lock().await;
+            match pending.get(&jti) {
+                Some(entry) if now.duration_since(entry.added_at) < entry.ttl => {
+                    return Ok(true);
+                }
+                Some(_) => {
+                    // Expired pending entry: nothing durable to back it anymore,
+                    // fall through to the inner backend like any other token.
+                    pending.remove(&jti);
+                }
+                None => {}
             }
-            None => {}
         }
+
         self.inner.is_revoked(jti).await
     }
 }
@@ -213,9 +238,11 @@ impl AccessTokenBlacklist for DurableRevocationBlacklist {
 #[cfg(test)]
 mod tests {
     use std::collections::HashSet;
+    use std::time::Duration;
 
     use super::*;
     use shared::ports::{AccessTokenBlacklist, BlacklistError};
+    use sqlx::postgres::PgPoolOptions;
 
     /// Backend that can be told to fail `revoke` (and optionally `is_revoked`),
     /// recording every jti it was asked to revoke so tests can assert on what
@@ -250,8 +277,16 @@ mod tests {
     /// Postgres, so an accidental journal attempt fails fast with a connection
     /// error instead of silently writing to whatever dev database happens to be
     /// running (same technique as `rate_limiter_setup.rs`'s unreachable-URL test).
+    ///
+    /// A short `acquire_timeout` (rather than sqlx's 30s default) keeps a test
+    /// that unexpectedly *does* try to touch the database failing within this
+    /// test's own timeframe instead of hanging for half a minute -- `revoke`'s
+    /// internal `sqlx::query(...).execute(&self.pool)` retries a refused
+    /// connection with backoff until the acquire timeout elapses.
     fn dead_pool() -> PgPool {
-        PgPool::connect_lazy("postgres://user:pass@127.0.0.1:1/app_home")
+        PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://user:pass@127.0.0.1:1/app_home")
             .expect("dead pool should not need a live connection to be created")
     }
 

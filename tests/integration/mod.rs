@@ -1,7 +1,10 @@
 use std::sync::OnceLock;
+use std::time::Duration;
 
+use sqlx::PgPool;
+use sqlx::postgres::PgPoolOptions;
 use tokio::runtime::Runtime;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OnceCell};
 
 // Tests that read or write the shared `access_token_revocation_outbox` table are
 // serialized through this lock: `DurableRevocationBlacklist::flush_pending` sweeps
@@ -41,6 +44,30 @@ pub(crate) async fn clean_outbox(pool: &sqlx::PgPool) {
         .execute(pool)
         .await
         .expect("clearing the outbox table for the test should succeed");
+}
+
+static POOL: OnceCell<PgPool> = OnceCell::const_new();
+
+/// Shared Postgres pool for every DB-backed integration test in this binary
+/// (durable-revocation outbox tests, Redis blacklist durable-retry tests, etc.)
+/// -- opening a brand new `PgPool` per test is slow and flaky over the extra hop
+/// a Podman VM on Windows adds, so every test file borrows this one instead of
+/// keeping its own copy of the same `OnceCell`/`PgPoolOptions` setup.
+pub(crate) async fn test_pool() -> &'static PgPool {
+    POOL.get_or_init(|| async {
+        let database_url =
+            std::env::var("DATABASE_URL").expect("DATABASE_URL must be set for integration tests");
+        // `test_before_acquire` + a short `idle_timeout`: connections that the
+        // Podman VM quietly drops while idle would otherwise be handed to the
+        // next test already-dead, hanging its acquire until the 30s timeout.
+        PgPoolOptions::new()
+            .test_before_acquire(true)
+            .idle_timeout(Duration::from_secs(30))
+            .connect(&database_url)
+            .await
+            .expect("Failed to connect to database")
+    })
+    .await
 }
 
 mod access_token_revocation_outbox_test;

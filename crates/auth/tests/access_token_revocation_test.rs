@@ -147,3 +147,37 @@ async fn extractor_fails_open_when_blacklist_backend_errors() {
         "an unavailable revocation backend must fail open (see #88)"
     );
 }
+
+#[tokio::test]
+async fn extractor_rejects_expired_token() {
+    // Built directly with jsonwebtoken (not JwtServiceImpl, which always mints a
+    // token expiring in the future) so `exp` can be set in the past. Even though
+    // this token was never revoked, jsonwebtoken's own exp check must reject it
+    // before the blacklist is ever consulted -- expiry and revocation are
+    // independent rejection paths, and only the latter is exercised by the
+    // tests above.
+    let now = chrono::Utc::now().timestamp() as usize;
+    let claims = serde_json::json!({
+        "sub": Uuid::now_v7(),
+        "jti": Uuid::now_v7(),
+        "iss": ISSUER_AUDIENCE,
+        "aud": ISSUER_AUDIENCE,
+        "exp": now - 60,
+        "iat": now - 960,
+    });
+    let token = jsonwebtoken::encode(
+        &jsonwebtoken::Header::default(),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_secret(SECRET.as_bytes()),
+    )
+    .unwrap();
+
+    let mut parts = build_parts(&token, Arc::new(MockBlacklist::default())).await;
+
+    assert!(
+        AuthenticatedUser::from_request_parts(&mut parts, &())
+            .await
+            .is_err(),
+        "an expired access token must be rejected with 401, independent of the revocation list"
+    );
+}

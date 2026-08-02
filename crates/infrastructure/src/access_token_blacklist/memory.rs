@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use shared::ports::{AccessTokenBlacklist, BlacklistError};
@@ -23,9 +23,19 @@ struct RevokedEntry {
 /// automatically in `main.rs` when `REDIS_URL` is configured).
 ///
 /// This backend never fails: `revoke` and `is_revoked` always return `Ok`.
+///
+/// `RwLock`, not `Mutex`: `is_revoked` runs on every authenticated request (the
+/// hottest path touching this struct) and, in its common cases -- token found
+/// and still valid, or token never seen at all -- only needs to *read* the map,
+/// with no `.await` inside that read. A plain `Mutex` would serialize every
+/// concurrent request behind whichever one currently holds the lock even though
+/// none of them are actually mutating anything in those cases; `RwLock` lets
+/// them proceed concurrently. `revoke` still needs exclusive (write) access, and
+/// so does the rare "found but expired" branch of `is_revoked` that removes the
+/// stale entry.
 #[derive(Debug, Default)]
 pub struct MemoryAccessTokenBlacklist {
-    entries: Mutex<HashMap<Uuid, RevokedEntry>>,
+    entries: RwLock<HashMap<Uuid, RevokedEntry>>,
 }
 
 impl MemoryAccessTokenBlacklist {
@@ -42,14 +52,14 @@ impl MemoryAccessTokenBlacklist {
     /// nothing outside this module can inspect *which* tokens are revoked
     /// through this method, only how many.
     pub async fn entry_count(&self) -> usize {
-        self.entries.lock().await.len()
+        self.entries.read().await.len()
     }
 }
 
 #[async_trait]
 impl AccessTokenBlacklist for MemoryAccessTokenBlacklist {
     async fn revoke(&self, jti: Uuid, ttl_secs: u64) -> Result<(), BlacklistError> {
-        let mut entries = self.entries.lock().await;
+        let mut entries = self.entries.write().await;
         let now = Instant::now();
 
         // Opportunistic sweep: `is_revoked` only removes an entry when that exact
@@ -73,14 +83,26 @@ impl AccessTokenBlacklist for MemoryAccessTokenBlacklist {
     }
 
     async fn is_revoked(&self, jti: Uuid) -> Result<bool, BlacklistError> {
-        let mut entries = self.entries.lock().await;
         let now = Instant::now();
-        match entries.get(&jti) {
-            Some(entry) if now.duration_since(entry.revoked_at) < entry.ttl => Ok(true),
-            _ => {
-                entries.remove(&jti);
-                Ok(false)
+
+        // Fast path: a shared read lock covers both common outcomes (revoked and
+        // still valid, or never revoked at all) without blocking any other
+        // concurrent reader.
+        {
+            let entries = self.entries.read().await;
+            match entries.get(&jti) {
+                Some(entry) if now.duration_since(entry.revoked_at) < entry.ttl => {
+                    return Ok(true);
+                }
+                None => return Ok(false),
+                Some(_) => {} // present but expired -- fall through to remove it
             }
         }
+
+        // Slow path: the entry exists but its TTL has elapsed. Only this branch
+        // needs exclusive access, to actually remove the stale entry.
+        let mut entries = self.entries.write().await;
+        entries.remove(&jti);
+        Ok(false)
     }
 }
