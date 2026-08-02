@@ -65,7 +65,7 @@ Used by profiles, admin, and auth/logout handlers (which use `jti`/`exp` to revo
 ## Ports
 
 - **`RateLimiter`** — `check`, `record_attempt`, `try_check_and_record`, `remaining_attempts`, `reset`; implemented by `infrastructure::rate_limiter::{memory, redis}`.
-- **`AccessTokenBlacklist`** — `revoke(jti, ttl_secs)`, `is_revoked(jti)`; implemented by `infrastructure::access_token_blacklist::{memory, redis}`. Both methods return `Result<_, BlacklistError>`; callers fail open on `Err` (see #88).
+- **`AccessTokenBlacklist`** — `revoke(jti, ttl_secs)`, `is_revoked(jti)`; implemented by `infrastructure::access_token_blacklist::{memory, redis, durable}` (`durable` wraps `redis` with Postgres-journaled retry, see #140). Both methods return `Result<_, BlacklistError>`; callers fail open on `Err` (see #88).
 
 ## Networking (`net`)
 
