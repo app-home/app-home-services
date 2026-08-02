@@ -277,6 +277,7 @@ For the other bounded contexts, see:
 | `007_add_role_to_users.sql` | Adds `role` column (`user` / `admin`) to users table (superseded by 008) |
 | `008_create_admin_user_roles.sql` | Moves `role` into its own `user_roles` table owned by the admin context; drops `users.role` |
 | `009_create_access_token_revocation_outbox.sql` | Durable-retry outbox for access token revocations Redis rejects (see #140) |
+| `010_access_token_revocation_outbox_expires_at.sql` | Adds the indexed `expires_at` column the outbox expiry sweep uses (`timestamptz + interval` can't be indexed directly) |
 
 Migrations run automatically on startup.
 

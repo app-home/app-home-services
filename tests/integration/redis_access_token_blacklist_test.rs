@@ -239,11 +239,14 @@ fn flush_pending_lands_journaled_revocation_in_redis() {
         // Simulate a revocation that was journaled while Redis was down (e.g. by
         // another instance, or before this process restarted), without needing to
         // take this test's own Redis down: write the outbox row directly.
-        sqlx::query("INSERT INTO access_token_revocation_outbox (jti, ttl_secs) VALUES ($1, 900)")
-            .bind(jti)
-            .execute(pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO access_token_revocation_outbox (jti, ttl_secs, expires_at)
+             VALUES ($1, 900, NOW() + INTERVAL '900 seconds')",
+        )
+        .bind(jti)
+        .execute(pool)
+        .await
+        .unwrap();
 
         let remaining = durable.flush_pending().await.unwrap();
         assert_eq!(

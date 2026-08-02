@@ -82,7 +82,8 @@ impl DurableRevocationBlacklist {
     /// still down) must not replace or duplicate the original row.
     async fn journal(&self, jti: Uuid, ttl_secs: u64) -> Result<(), BlacklistError> {
         match sqlx::query(
-            "INSERT INTO access_token_revocation_outbox (jti, ttl_secs) VALUES ($1, $2)
+            "INSERT INTO access_token_revocation_outbox (jti, ttl_secs, expires_at)
+             VALUES ($1, $2, NOW() + ($2 * INTERVAL '1 second'))
              ON CONFLICT (jti) DO NOTHING",
         )
         .bind(jti)
@@ -118,14 +119,12 @@ impl DurableRevocationBlacklist {
         // Rows whose token lifetime has already elapsed have nothing left to
         // revoke -- the token can't validate anymore -- so drop them without a
         // Redis round-trip. Doing it in SQL avoids decoding the timestamp in
-        // Rust (see migration 009). Unbounded on purpose: it's a single indexed
+        // Rust (see migrations 009/010, which store it as the indexed
+        // `expires_at` column). Unbounded on purpose: it's a single indexed
         // DELETE, not a per-row Redis round-trip, so it doesn't need batching.
-        sqlx::query(
-            "DELETE FROM access_token_revocation_outbox
-             WHERE created_at + (ttl_secs * INTERVAL '1 second') <= NOW()",
-        )
-        .execute(&self.pool)
-        .await?;
+        sqlx::query("DELETE FROM access_token_revocation_outbox WHERE expires_at <= NOW()")
+            .execute(&self.pool)
+            .await?;
 
         let rows: Vec<(Uuid, i64)> = sqlx::query_as(
             "SELECT jti, ttl_secs FROM access_token_revocation_outbox
