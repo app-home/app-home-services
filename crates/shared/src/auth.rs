@@ -86,26 +86,51 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedUser {
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
         let token = {
-            let auth_header = parts
+            let Some(auth_header) = parts
                 .headers
                 .get("Authorization")
                 .and_then(|v| v.to_str().ok())
-                .ok_or(AuthRejection)?;
-            auth_header
-                .strip_prefix("Bearer ")
-                .ok_or(AuthRejection)?
-                .to_string()
+            else {
+                // Routine and expected for any anonymous/unauthenticated request
+                // hitting a protected route, so this stays at debug -- logging it
+                // at warn/error would just be noise on every logged-out client.
+                tracing::debug!("Auth rejected: missing or non-UTF-8 Authorization header");
+                return Err(AuthRejection);
+            };
+            let Some(token) = auth_header.strip_prefix("Bearer ") else {
+                tracing::debug!("Auth rejected: Authorization header is not a Bearer token");
+                return Err(AuthRejection);
+            };
+            token.to_string()
         };
 
         let Extension(verification) =
             Extension::<Arc<JwtVerification>>::from_request_parts(parts, _state)
                 .await
-                .map_err(|_| AuthRejection)?;
+                .map_err(|_| {
+                    // Unlike the other rejections in this function, this one
+                    // isn't caused by anything the client sent -- it means this
+                    // route wasn't wired up with the JwtVerification Extension
+                    // layer at all, which is a deployment/config bug, not a
+                    // client error. Every request to an affected route would
+                    // 401 regardless of how valid its token is, so this is
+                    // worth its own error-level line to stand out from normal
+                    // auth-rejection noise.
+                    tracing::error!(
+                        "Auth rejected: JwtVerification extension missing -- this route is misconfigured (missing Extension layer), not a client error"
+                    );
+                    AuthRejection
+                })?;
 
         let Extension(blacklist) =
             Extension::<Arc<dyn AccessTokenBlacklist>>::from_request_parts(parts, _state)
                 .await
-                .map_err(|_| AuthRejection)?;
+                .map_err(|_| {
+                    tracing::error!(
+                        "Auth rejected: AccessTokenBlacklist extension missing -- this route is misconfigured (missing Extension layer), not a client error"
+                    );
+                    AuthRejection
+                })?;
 
         #[derive(Deserialize)]
         struct Claims {
@@ -114,7 +139,16 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedUser {
             exp: usize,
         }
 
-        let claims = verification.decode::<Claims>(&token).ok_or(AuthRejection)?;
+        let Some(claims) = verification.decode::<Claims>(&token) else {
+            // Expected background noise (expired tokens, tokens from another
+            // environment after an iss/aud mismatch, tampered/garbage tokens) --
+            // debug level so it's available when actively investigating a "why
+            // am I getting 401s" report, without polluting normal logs.
+            tracing::debug!(
+                "Auth rejected: token failed signature/algorithm/iss/aud/exp validation"
+            );
+            return Err(AuthRejection);
+        };
 
         // Revoked access tokens (e.g. after logout, see #88) are rejected before
         // the request reaches the handler. If the blacklist backend is unavailable
@@ -122,7 +156,14 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedUser {
         // limiter's posture, so a Redis outage degrades availability, not every
         // authenticated request.
         match blacklist.is_revoked(claims.jti).await {
-            Ok(true) => return Err(AuthRejection),
+            Ok(true) => {
+                tracing::debug!(
+                    user_id = %claims.sub,
+                    jti = %claims.jti,
+                    "Auth rejected: access token is revoked"
+                );
+                return Err(AuthRejection);
+            }
             Ok(false) => {}
             Err(BlacklistError) => {
                 tracing::warn!(
