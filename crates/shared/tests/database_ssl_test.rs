@@ -25,7 +25,8 @@ fn accepts_sslmode_disable_for_loopback_hosts() {
         let result = validate_database_ssl(url);
         assert!(
             result.is_ok(),
-            "sslmode=disable against a loopback host must be accepted (it never leaves the machine), got {result:?}"
+            "sslmode=disable against a loopback host must be accepted \
+             (it never leaves the machine), got {result:?}"
         );
     }
 }
@@ -61,7 +62,8 @@ fn rejects_uppercase_sslmode_disable_against_a_remote_host() {
 
     assert!(
         result.is_err(),
-        "sslmode=DISABLE (any casing) against a remote host must be a fatal startup error, got {result:?}"
+        "sslmode=DISABLE (any casing) against a remote host must be \
+         a fatal startup error, got {result:?}"
     );
 }
 
@@ -75,7 +77,8 @@ fn rejects_ssl_dash_mode_disable_alias_against_a_remote_host() {
 
     assert!(
         result.is_err(),
-        "ssl-mode=disable (the sqlx alias) against a remote host must be a fatal startup error, got {result:?}"
+        "ssl-mode=disable (the sqlx alias) against a remote host must be \
+         a fatal startup error, got {result:?}"
     );
 }
 
@@ -90,7 +93,8 @@ fn duplicate_sslmode_resolves_to_the_last_occurrence() {
 
     assert!(
         result.is_err(),
-        "a URL whose LAST sslmode value is disable must be rejected even if an earlier one wasn't, got {result:?}"
+        "a URL whose LAST sslmode value is disable must be rejected \
+         even if an earlier one wasn't, got {result:?}"
     );
 
     let inverse = validate_database_ssl(
@@ -98,7 +102,8 @@ fn duplicate_sslmode_resolves_to_the_last_occurrence() {
     );
     assert!(
         inverse.is_ok(),
-        "a URL whose LAST sslmode value is verify-full must be accepted even if an earlier one was disable, got {inverse:?}"
+        "a URL whose LAST sslmode value is verify-full must be accepted \
+         even if an earlier one was disable, got {inverse:?}"
     );
 }
 
@@ -367,6 +372,7 @@ fn ssl_flag_rejects_an_unrecognized_value_instead_of_defaulting_to_false() {
 
     assert!(
         result.is_err(),
-        "an unrecognized DB_REQUIRE_SSL value must be a startup error, not a silent false, got {result:?}"
+        "an unrecognized DB_REQUIRE_SSL value must be a startup error, \
+         not a silent false, got {result:?}"
     );
 }
