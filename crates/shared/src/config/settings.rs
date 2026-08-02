@@ -125,11 +125,18 @@ impl fmt::Debug for Settings {
 /// `find_map` would validate against the first occurrence while sqlx itself
 /// connects with the last, letting a URL past validation that sqlx would
 /// actually open in plaintext. Lowercased so every caller can compare against a
-/// plain lowercase literal. See #142 review (CodeRabbit).
+/// plain lowercase literal.
+///
+/// Uses `.last()`, not `.next_back()`: `Url::query_pairs()` returns
+/// `form_urlencoded::Parse`, which only implements the forward `Iterator`
+/// trait, not `DoubleEndedIterator` -- `.next_back()` doesn't compile against
+/// it (or against the `Filter` this builds on top of it). `.last()` gets the
+/// same "final matching pair" result by fully consuming the (short, already
+/// filtered) iterator instead. See #142 review (CodeRabbit).
 fn extract_sslmode(url: &Url) -> Option<String> {
     url.query_pairs()
         .filter(|(key, _)| key == "sslmode" || key == "ssl-mode")
-        .next_back()
+        .last()
         .map(|(_, value)| value.to_lowercase())
 }
 
