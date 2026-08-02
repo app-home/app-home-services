@@ -25,10 +25,15 @@ groups:
         # a failing-open access token revocation list means revoked tokens keep
         # validating (a security degradation), so we want to hear about any
         # Redis error at all. See docs/alerting.md.
+        #
+        # severity: critical (not warning, unlike the rate-limiter alert above):
+        # a failing-open revocation list means a token the user explicitly
+        # revoked (e.g. after a suspected compromise) keeps working, not just
+        # a weakened brute-force defense.
         expr: increase(access_token_blacklist_redis_errors_total[5m]) > 0
         for: 1m
         labels:
-          severity: warning
+          severity: critical
         annotations:
           summary: "Redis access token blacklist is failing open"
           description: >-
@@ -50,9 +55,10 @@ groups:
         annotations:
           summary: "Access token revocations are backlogged in the outbox"
           description: >-
-            {{ $value }} journaled access-token revocation(s) have been waiting
-            longer than 5 minutes to reach Redis, which means Redis has been
-            down (or unreachable) long enough for the flush worker to fall
-            behind. Tokens logged out during this window keep validating on
-            other instances until the backlog clears. See docs/alerting.md for
+            The access-token revocation outbox has had a non-empty backlog
+            ({{ $value }} journaled revocation(s) as of the last sweep) for at
+            least 5 minutes straight, which means Redis has been down (or
+            unreachable) long enough for the flush worker to fall behind.
+            Tokens logged out during this window keep validating on other
+            instances until the backlog clears. See docs/alerting.md for
             context.
