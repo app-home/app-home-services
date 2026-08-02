@@ -250,6 +250,19 @@ pub fn parse_required_ssl_flag(raw: Option<String>) -> Result<bool, String> {
     }
 }
 
+/// Parses a cosmetic/non-security-relevant boolean env var (`ENABLE_SWAGGER`):
+/// unrecognized or unset values fall back to `false` rather than erroring, since
+/// the failure mode of getting this wrong is "Swagger UI stays off", not a
+/// security regression -- unlike `DB_REQUIRE_SSL` (see `parse_required_ssl_flag`,
+/// which is intentionally stricter for exactly that reason). Accepts
+/// `1`/`true`/`yes` (case-insensitive, trimmed) as `true`; everything else,
+/// including unset, is `false`.
+fn parse_bool_env(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 impl Settings {
     /// Builds `Settings` from process environment variables, applying defaults
     /// for everything optional (see each field's own doc comment for its
@@ -264,10 +277,7 @@ impl Settings {
     /// returned as an error.
     pub fn from_env() -> Result<Self, String> {
         let db_require_ssl = parse_required_ssl_flag(std::env::var("DB_REQUIRE_SSL").ok())?;
-
-        let enable_swagger = std::env::var("ENABLE_SWAGGER")
-            .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
-            .unwrap_or(false);
+        let enable_swagger = parse_bool_env("ENABLE_SWAGGER");
 
         let database_url = {
             let raw = std::env::var("DATABASE_URL")
