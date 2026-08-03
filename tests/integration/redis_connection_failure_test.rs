@@ -1,7 +1,8 @@
 // Integration test for issue #37: simulates a *live* Redis connection dying
 // mid-operation (not just being unreachable at connect time -- that's already
-// covered by redis_startup_test.rs) and asserts RedisRateLimiter fails open on every
-// RateLimiter method, incrementing its error counter each time.
+// covered by redis_startup_test.rs) and asserts RedisRateLimiter falls back to its
+// in-memory per-instance shadow on every RateLimiter method (see #89), while
+// incrementing its error counter each time.
 //
 // To run: cargo test --test integration -- --ignored redis_connection_failure
 //
@@ -153,7 +154,7 @@ impl Drop for RedisTestContainer {
 
 #[tokio::test]
 #[ignore]
-async fn redis_connection_failure_causes_every_method_to_fail_open() {
+async fn redis_connection_failure_causes_every_method_to_use_the_shadow() {
     use std::net::{IpAddr, Ipv4Addr};
 
     let container = RedisTestContainer::start();
@@ -166,8 +167,8 @@ async fn redis_connection_failure_causes_every_method_to_fail_open() {
     let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
 
     // Sanity check against the still-healthy container: no errors recorded yet, and
-    // a normal (non-failed-open) check succeeds because there's simply no counter
-    // for this IP yet, not because of a fail-open path.
+    // a normal (non-shadow) check succeeds because there's simply no counter
+    // for this IP yet, not because of a degraded path.
     assert!(limiter.check(ip).await);
     assert_eq!(
         limiter.redis_error_count(),
@@ -183,10 +184,10 @@ async fn redis_connection_failure_causes_every_method_to_fail_open() {
     // reset is observed).
     tokio::time::sleep(Duration::from_millis(500)).await;
 
-    // check(): must fail open (return true), not propagate the error or hang.
+    // check(): must not hang or propagate the error; the shadow (fresh IP) allows.
     assert!(
         limiter.check(ip).await,
-        "check() must fail open (return true) when Redis is unreachable"
+        "check() must allow a fresh IP via the in-memory shadow when Redis is unreachable"
     );
     assert!(
         limiter.redis_error_count() >= 1,
@@ -194,7 +195,7 @@ async fn redis_connection_failure_causes_every_method_to_fail_open() {
     );
 
     // record_attempt(): must not panic and must still increment the error counter,
-    // even though it has no meaningful return value to assert fail-open on directly.
+    // recording the attempt in the shadow.
     let count_before_record = limiter.redis_error_count();
     limiter.record_attempt(ip).await;
     assert!(
@@ -202,21 +203,80 @@ async fn redis_connection_failure_causes_every_method_to_fail_open() {
         "record_attempt() against a dead connection should have incremented the error counter"
     );
 
-    // remaining_attempts(): must fail open by reporting the full budget (max_attempts
-    // = 10, per the RedisRateLimiter::connect call above), not a partial/zero value
-    // that would incorrectly look like the limit was already being enforced.
+    // remaining_attempts(): reads the shadow budget (10 max, 1 attempt recorded
+    // above), not a fail-open max that would hide that enforcement is active.
     assert_eq!(
         limiter.remaining_attempts(ip).await,
-        10,
-        "remaining_attempts() must fail open to the max budget when Redis is unreachable"
+        9,
+        "remaining_attempts() must report the shadow budget, not the full max, once the shadow is enforcing"
     );
 
-    // reset(): must not panic, and should still count as an observed error even
-    // though there's no return value to assert fail-open behavior on.
+    // reset(): must not panic, should still count as an observed error, and clears
+    // the shadow entry so the budget for this IP is fresh again.
     let count_before_reset = limiter.redis_error_count();
     limiter.reset(ip).await;
     assert!(
         limiter.redis_error_count() > count_before_reset,
         "reset() against a dead connection should have incremented the error counter"
+    );
+    assert_eq!(
+        limiter.remaining_attempts(ip).await,
+        10,
+        "reset() must clear the shadow entry so the budget is fresh"
+    );
+}
+
+#[tokio::test]
+#[ignore]
+async fn redis_connection_failure_shadow_still_enforces_the_per_ip_budget() {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let container = RedisTestContainer::start();
+    let redis_url = container.redis_url();
+
+    let max_attempts = 10;
+    let limiter = RedisRateLimiter::connect(&redis_url, max_attempts, 300, "flaky-budget")
+        .await
+        .expect("initial connection to the healthy test container should succeed");
+
+    let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+
+    container.kill();
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // While Redis is down, try_check_and_record must still enforce the per-IP
+    // budget via the in-memory shadow: the first max_attempts are allowed, the
+    // next one is rejected. This is the regression test for #89.
+    for allowed in 1..=max_attempts {
+        assert!(
+            limiter.try_check_and_record(ip).await,
+            "attempt {allowed}/{max_attempts} should be allowed by the shadow budget"
+        );
+    }
+    assert!(
+        !limiter.try_check_and_record(ip).await,
+        "the {}-th attempt must be rejected once the shadow budget is exhausted",
+        max_attempts + 1
+    );
+    assert!(
+        !limiter.check(ip).await,
+        "check() must report the IP as rate-limited via the shadow budget"
+    );
+    assert_eq!(
+        limiter.remaining_attempts(ip).await,
+        0,
+        "remaining_attempts() must report 0 when the shadow budget is exhausted"
+    );
+
+    // A successful login resets the counter: after reset, the shadow budget is
+    // fresh again even though Redis is still down.
+    limiter.reset(ip).await;
+    assert!(
+        limiter.try_check_and_record(ip).await,
+        "the shadow budget must be fresh again after reset()"
+    );
+    assert!(
+        limiter.redis_error_count() >= 1,
+        "the outage should have incremented the error counter"
     );
 }

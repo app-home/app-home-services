@@ -54,9 +54,9 @@ pub async fn metrics_ip_allowlist(...) -> Response  // the actual middleware fn
 | Adapter | Use Case |
 |---------|----------|
 | `MemoryRateLimiter` | In-memory, single-instance only (no shared state between instances) |
-| `RedisRateLimiter` | Redis-backed, multi-instance, fail-open on network errors |
+| `RedisRateLimiter` | Redis-backed, multi-instance; during a Redis outage every operation is replayed against an in-memory shadow |
 
-**Redis fail-open behaviour**: if Redis is reachable at startup but fails later, `check()` returns `true` (allows request) — blocking all users due to a transient Redis error would be worse than temporarily disabling rate limiting.
+**Redis outage behaviour** (see #89): if Redis is reachable at startup but fails later, `RedisRateLimiter` does not stall the request and does not drop rate limiting entirely — each operation (`check`, `record_attempt`, `try_check_and_record`, `remaining_attempts`) is replayed against an internal `MemoryRateLimiter` shadow with the same per-IP budget, so brute-force protection stays active on *this* instance. The shadow is bounded in memory (`MAX_ENTRIES` + expired-entry cleanup) and only covers a single instance: while Redis is down, each replica enforces its own budget and cross-instance coordination is lost. Every Redis failure is still counted in `rate_limiter_redis_errors_total` and logged, and `ConnectionManager` reconnects automatically; once Redis is back, operations return to Redis and the shadow is ignored.
 
 ### `rate_limiter_setup`
 

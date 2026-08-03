@@ -8,6 +8,8 @@ use redis::aio::ConnectionManager;
 
 use shared::ports::RateLimiter;
 
+use crate::rate_limiter::memory::MemoryRateLimiter;
+
 /// Atomically increments the per-IP attempt counter and sets its expiry on the first
 /// increment within a window (fixed-window counter). Doing this in a single Lua
 /// script keeps INCR and EXPIRE atomic, so a crash or race between the two can never
@@ -46,12 +48,17 @@ end
 /// counter -- a burst of refresh attempts from an IP must not eat into that same IP's
 /// login attempt budget, and vice versa.
 ///
-/// On Redis errors (e.g. connection dropped), this implementation fails open --
-/// `check` returns `true` and `remaining_attempts` returns the max -- rather than
-/// blocking every request because Redis is briefly unavailable. Each failure is
-/// logged at `error` level so the outage is visible in logs, and also counted in
-/// `redis_error_count` (see its docs) so it can additionally be surfaced as a metric.
-/// `ConnectionManager` also reconnects automatically in the background.
+/// On Redis errors (e.g. connection dropped), this implementation does not stall the
+/// request and does not silently drop rate limiting: every operation is replayed
+/// against an internal in-memory `MemoryRateLimiter` *shadow*, so a per-IP budget is
+/// still enforced on this instance while Redis is unreachable (see #89). The shadow
+/// only covers a single instance (each replica enforces its own budget during an
+/// outage) and its memory is bounded (see `MemoryRateLimiter`'s `MAX_ENTRIES` and
+/// `clean_expired`). Each failure is logged at `error` level so the outage is visible
+/// in logs, and also counted in `redis_error_count` (see its docs) so it can
+/// additionally be surfaced as a metric. `ConnectionManager` also reconnects
+/// automatically in the background; once Redis is reachable again, operations go back
+/// to Redis and the shadow is ignored.
 #[derive(Clone)]
 pub struct RedisRateLimiter {
     conn: ConnectionManager,
@@ -59,6 +66,7 @@ pub struct RedisRateLimiter {
     window_seconds: u64,
     key_prefix: String,
     redis_error_count: Arc<AtomicU64>,
+    shadow: Arc<MemoryRateLimiter>,
 }
 
 impl RedisRateLimiter {
@@ -79,6 +87,7 @@ impl RedisRateLimiter {
             window_seconds,
             key_prefix: key_prefix.into(),
             redis_error_count: Arc::new(AtomicU64::new(0)),
+            shadow: Arc::new(MemoryRateLimiter::new(max_attempts, window_seconds)),
         })
     }
 
@@ -113,9 +122,9 @@ impl RateLimiter for RedisRateLimiter {
                 tracing::error!(
                     error = %e,
                     scope = %self.key_prefix,
-                    "Redis rate limiter: check failed, failing open"
+                    "Redis rate limiter: check failed, enforcing the in-memory shadow budget"
                 );
-                true
+                self.shadow.check(ip).await
             }
         }
     }
@@ -134,8 +143,9 @@ impl RateLimiter for RedisRateLimiter {
             tracing::error!(
                 error = %e,
                 scope = %self.key_prefix,
-                "Redis rate limiter: failed to record attempt"
+                "Redis rate limiter: failed to record attempt, recording in the in-memory shadow"
             );
+            self.shadow.record_attempt(ip).await;
         }
     }
 
@@ -156,9 +166,9 @@ impl RateLimiter for RedisRateLimiter {
                 tracing::error!(
                     error = %e,
                     scope = %self.key_prefix,
-                    "Redis rate limiter: try_check_and_record failed, failing open"
+                    "Redis rate limiter: try_check_and_record failed, enforcing the in-memory shadow budget"
                 );
-                true
+                self.shadow.try_check_and_record(ip).await
             }
         }
     }
@@ -175,14 +185,17 @@ impl RateLimiter for RedisRateLimiter {
                 tracing::error!(
                     error = %e,
                     scope = %self.key_prefix,
-                    "Redis rate limiter: remaining_attempts failed, defaulting to max"
+                    "Redis rate limiter: remaining_attempts failed, reading the in-memory shadow"
                 );
-                self.max_attempts
+                self.shadow.remaining_attempts(ip).await
             }
         }
     }
 
     async fn reset(&self, ip: IpAddr) {
+        // Clear the shadow entry regardless of the Redis outcome, so a stale shadow
+        // count from a previous outage can't carry over into the next one.
+        self.shadow.reset(ip).await;
         let mut conn = self.conn.clone();
         let result: redis::RedisResult<i64> = conn.del(self.key(ip)).await;
 
