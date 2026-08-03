@@ -278,6 +278,8 @@ For the other bounded contexts, see:
 | `008_create_admin_user_roles.sql` | Moves `role` into its own `user_roles` table owned by the admin context; drops `users.role` |
 | `009_create_access_token_revocation_outbox.sql` | Durable-retry outbox for access token revocations Redis rejects (see #140) |
 | `010_access_token_revocation_outbox_expires_at.sql` | Adds the indexed `expires_at` column the outbox expiry sweep uses (`timestamptz + interval` can't be indexed directly) |
+| `011_access_token_revocation_outbox_expires_at_idx.sql` | Creates the `expires_at` index concurrently (its own `-- no-transaction` migration, since `CREATE INDEX CONCURRENTLY` can't run inside a transaction) |
+| `012_access_token_revocation_outbox_expires_at_guard.sql` | Rebuilds the `expires_at` index if migration 011's concurrent build left it in an invalid state |
 
 Migrations run automatically on startup.
 
