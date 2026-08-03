@@ -14,7 +14,8 @@
 // an OS-assigned free port (so it never collides with a dev/test Redis you might
 // already have running -- e.g. scripts/test-with-podman.ps1's compose setup binds
 // port 16379, which is why this test does NOT hardcode that port), connects to it,
-// kills it mid-test to simulate a live failure, and removes the container when done
+// and then either kills it (connection-error path) or pauses it (REDIS_TIMEOUT path)
+// mid-test to simulate a live failure, and removes the container when done
 // (via RedisTestContainer's Drop impl, which runs even if an assertion panics, since
 // panics unwind by default).
 
@@ -135,6 +136,34 @@ impl RedisTestContainer {
         assert!(
             status.success(),
             "`podman kill` failed on the test container"
+        );
+    }
+
+    /// Pauses the container's processes so an already-open TCP connection stays
+    /// open but Redis stops responding -- a command neither errors nor returns,
+    /// which is exactly the `REDIS_TIMEOUT` path. This is the complement of
+    /// `kill()`, which closes the connection and surfaces as an immediate I/O error.
+    fn pause(&self) {
+        let status = Command::new("podman")
+            .args(["pause", &self.name])
+            .status()
+            .expect("failed to run `podman pause`");
+
+        assert!(
+            status.success(),
+            "`podman pause` failed on the test container"
+        );
+    }
+
+    fn unpause(&self) {
+        let status = Command::new("podman")
+            .args(["unpause", &self.name])
+            .status()
+            .expect("failed to run `podman unpause`");
+
+        assert!(
+            status.success(),
+            "`podman unpause` failed on the test container"
         );
     }
 }
@@ -279,4 +308,56 @@ async fn redis_connection_failure_shadow_still_enforces_the_per_ip_budget() {
         limiter.redis_error_count() >= 1,
         "the outage should have incremented the error counter"
     );
+}
+
+#[tokio::test]
+#[ignore]
+async fn redis_pause_causes_operations_to_fall_back_to_the_shadow_within_the_timeout() {
+    use std::net::{IpAddr, Ipv4Addr};
+
+    let container = RedisTestContainer::start();
+    let redis_url = container.redis_url();
+
+    let limiter = RedisRateLimiter::connect(&redis_url, 10, 300, "flaky-pause")
+        .await
+        .expect("initial connection to the healthy test container should succeed");
+
+    let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
+
+    // Sanity check against the still-healthy container.
+    assert!(limiter.check(ip).await);
+    assert_eq!(
+        limiter.redis_error_count(),
+        0,
+        "no Redis errors should be recorded before the container is paused"
+    );
+
+    // Pausing leaves the established connection open but makes Redis stop
+    // responding, so a command neither errors nor returns -- the exact scenario
+    // `REDIS_TIMEOUT` guards against (a `kill()` instead would surface as an
+    // immediate connection error and never exercise the timeout branch).
+    container.pause();
+
+    // The outer timeout is a test-only guard: it must be generous enough that only
+    // REDIS_TIMEOUT (250ms) bounds the operation, but it fails loudly if the
+    // limiter ever regresses into hanging on a non-responsive Redis.
+    let started = std::time::Instant::now();
+    let allowed = tokio::time::timeout(Duration::from_secs(5), limiter.check(ip))
+        .await
+        .expect("check() must complete within 5s -- a hang means REDIS_TIMEOUT is not bounding the operation");
+    assert!(
+        allowed,
+        "a fresh IP must be allowed via the shadow once Redis stops responding"
+    );
+    assert!(
+        started.elapsed() < Duration::from_millis(2000),
+        "the shadow fallback must engage on REDIS_TIMEOUT, not on the test-only outer guard"
+    );
+    assert!(
+        limiter.redis_error_count() >= 1,
+        "a timed-out Redis operation should have incremented the error counter"
+    );
+
+    // Restore the container so its Drop impl can remove it cleanly.
+    container.unpause();
 }

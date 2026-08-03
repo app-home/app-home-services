@@ -4,17 +4,21 @@
 
 ### Redis rate limiter
 
-After startup, if a previously-healthy `RedisRateLimiter` loses Redis, it does not
-block requests and does not drop rate limiting entirely: every operation is
-replayed against an in-memory `MemoryRateLimiter` shadow with the same per-IP
-budget, so each instance keeps enforcing its own budget (see #89). Requests can
-still be rejected once that shadow budget is exhausted -- this is a fallback to
-per-instance enforcement, not a bypass. (A `REDIS_URL` that is configured but
-unreachable *at startup* is a separate, fatal case: `build_rate_limiters` aborts
-rather than ever reaching this fallback.) Cross-instance coordination is lost
-while Redis is down, and every Redis error is counted in-process (see
-`RedisRateLimiter::redis_error_count` / `error_counter_handle`) and, as of #36,
-published as a Prometheus metric:
+After startup, if a previously-healthy `RedisRateLimiter` loses Redis, failed
+operations fall back to an in-memory `MemoryRateLimiter` shadow within a 250ms
+timeout (see `REDIS_TIMEOUT` in `rate_limiter/redis.rs`) instead of waiting
+indefinitely or dropping rate limiting entirely: each operation is replayed
+against the shadow with the same per-IP budget, so each instance keeps enforcing
+its own budget (see #89). The shadow is not synchronized with Redis -- it starts
+cold on the first failure, so an IP that already used up its Redis budget gets a
+fresh allowance once the shadow takes over (from then on the shadow enforces the
+budget per-instance). Requests can still be rejected once that shadow budget is
+exhausted -- this is a fallback to per-instance enforcement, not a bypass. (A
+`REDIS_URL` that is configured but unreachable *at startup* is a separate, fatal
+case: `build_rate_limiters` aborts rather than ever reaching this fallback.)
+Cross-instance coordination is lost while Redis is down, and every Redis error is
+counted in-process (see `RedisRateLimiter::redis_error_count` /
+`error_counter_handle`) and, as of #36, published as a Prometheus metric:
 
 ```text
 rate_limiter_redis_errors_total{scope="login"}
