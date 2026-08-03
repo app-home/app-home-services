@@ -279,7 +279,8 @@ For the other bounded contexts, see:
 | `009_create_access_token_revocation_outbox.sql` | Durable-retry outbox for access token revocations Redis rejects (see #140) |
 | `010_access_token_revocation_outbox_expires_at.sql` | Adds the indexed `expires_at` column the outbox expiry sweep uses (`timestamptz + interval` can't be indexed directly) |
 | `011_access_token_revocation_outbox_expires_at_idx.sql` | Creates the `expires_at` index concurrently (its own `-- no-transaction` migration, since `CREATE INDEX CONCURRENTLY` can't run inside a transaction) |
-| `012_access_token_revocation_outbox_expires_at_guard.sql` | `REINDEX INDEX CONCURRENTLY` repair for the `expires_at` index if migration 011's concurrent build left it in an invalid state (online, doesn't block writes) |
+| `012_access_token_revocation_outbox_expires_at_cleanup.sql` | Drops any invalid `_ccnew`/`_ccold` leftover indexes a failed concurrent reindex left behind, before migration 013 retries the rebuild |
+| `013_access_token_revocation_outbox_expires_at_reindex.sql` | `REINDEX INDEX CONCURRENTLY` repair for the `expires_at` index if migration 011's concurrent build left it in an invalid state (online, doesn't block writes) |
 
 Migrations run automatically on startup.
 
