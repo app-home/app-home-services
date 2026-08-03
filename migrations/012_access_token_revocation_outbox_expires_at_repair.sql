@@ -20,13 +20,17 @@
 --     (non-concurrent) `REINDEX INDEX`. It never touches a valid index, so
 --     migration 011's normal path costs nothing.
 --
--- A plain (non-concurrent) rebuild briefly blocks writes to the table, but this
--- branch only runs when the index is already broken (queries ignore it and scan
--- anyway) and the outbox table is normally empty (it only fills during a Redis
--- outage, see migration 009). REINDEX INDEX CONCURRENTLY cannot be used here:
--- it cannot run inside a DO block or share the migration's single implicit
--- transaction, and sqlx runs a `-- no-transaction` migration as one
--- simple-protocol query -- so a conditional/concurrent rebuild is impossible.
+-- Both the DROP INDEX and the plain (non-concurrent) rebuild can briefly block
+-- reads and writes on the outbox table: DROP INDEX takes an ACCESS EXCLUSIVE
+-- lock on the parent table, and a non-concurrent REINDEX blocks writes and
+-- virtually all queries against it, including sequential scans. This is
+-- acceptable because this branch only runs when the index is already broken
+-- (queries ignore it and scan anyway) and the outbox table is normally empty
+-- (it only fills during a Redis outage, see migration 009). REINDEX INDEX
+-- CONCURRENTLY cannot be used here: it cannot run inside a DO block or share
+-- the migration's single implicit transaction, and sqlx runs a
+-- `-- no-transaction` migration as one simple-protocol query -- so a
+-- conditional/concurrent rebuild is impossible.
 DO $migration$
 DECLARE
     r record;

@@ -31,6 +31,7 @@
 use sqlx::PgPool;
 
 const TARGET_INDEX: &str = "access_token_revocation_outbox_expires_at_idx";
+const TEST_INDEX_SUFFIXES: [&str; 3] = ["rebuild", "leftover", "valid"];
 const REPAIR_MIGRATION: &str =
     include_str!("../../migrations/012_access_token_revocation_outbox_expires_at_repair.sql");
 
@@ -110,6 +111,16 @@ async fn drop_test_indexes(pool: &PgPool, test_index: &str) {
     }
 }
 
+/// Drops the indexes every migration test can leave behind (from any earlier,
+/// possibly failed, run of any of them). A leftover -- even a valid, unique
+/// one -- on the shared outbox table would block another test's duplicate-row
+/// insert or index build.
+async fn clean_previous_test_indexes(pool: &PgPool) {
+    for suffix in TEST_INDEX_SUFFIXES {
+        drop_test_indexes(pool, &format!("{TARGET_INDEX}_{suffix}")).await;
+    }
+}
+
 #[test]
 #[ignore]
 fn repair_rebuilds_an_invalid_index_left_by_a_failed_concurrent_build() {
@@ -120,7 +131,7 @@ fn repair_rebuilds_an_invalid_index_left_by_a_failed_concurrent_build() {
         // Drop every test-prefixed index first: a leftover (possibly valid,
         // unique) index from an interrupted earlier run would block this test's
         // duplicate-row insert or index build.
-        drop_test_indexes(pool, &format!("{TARGET_INDEX}_test")).await;
+        clean_previous_test_indexes(pool).await;
         let test_index = format!("{TARGET_INDEX}_rebuild");
 
         leave_invalid_index(pool, &test_index).await;
@@ -154,7 +165,7 @@ fn repair_drops_a_ccnew_leftover_and_rebuilds_the_invalid_target() {
         let pool = crate::integration::test_pool().await;
         let _table_guard = crate::integration::outbox_table_guard().await;
         crate::integration::clean_outbox(pool).await;
-        drop_test_indexes(pool, &format!("{TARGET_INDEX}_test")).await;
+        clean_previous_test_indexes(pool).await;
         let test_index = format!("{TARGET_INDEX}_leftover");
 
         // Manufacture the state a failed REINDEX CONCURRENTLY can leave: an
@@ -213,7 +224,7 @@ fn repair_leaves_a_valid_index_untouched() {
         let pool = crate::integration::test_pool().await;
         let _table_guard = crate::integration::outbox_table_guard().await;
         crate::integration::clean_outbox(pool).await;
-        drop_test_indexes(pool, &format!("{TARGET_INDEX}_test")).await;
+        clean_previous_test_indexes(pool).await;
         let test_index = format!("{TARGET_INDEX}_valid");
 
         let create =
