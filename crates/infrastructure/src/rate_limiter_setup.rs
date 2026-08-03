@@ -129,10 +129,11 @@ mod tests {
     /// poll for a backend that can't degrade this way). There's no way to downcast
     /// the returned `Arc<dyn RateLimiter>` back to a concrete type to assert on it
     /// directly (the port intentionally doesn't require `Any`), so this asserts on
-    /// the behavior that distinguishes the two paths instead: this call succeeds
-    /// immediately with no Redis reachable in the test environment. If the `None`
-    /// branch ever regressed into attempting a Redis connection, this test would
-    /// fail (or hang) rather than silently passing.
+    /// the behavior that distinguishes the two paths instead: the error-counter
+    /// handles are `None` for the memory backend. This only observes the absence of
+    /// the Redis error counters -- it cannot directly observe whether a network
+    /// attempt was made, so a regression that tried Redis and then fell back to
+    /// memory would not be caught by this test alone.
     #[tokio::test]
     async fn falls_back_to_memory_backend_when_redis_url_is_unset() {
         let settings = settings_with_redis_url(None);

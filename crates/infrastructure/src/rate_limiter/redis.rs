@@ -261,12 +261,17 @@ impl RateLimiter for RedisRateLimiter {
         //
         // Attempted the Redis DEL first (not after, as an earlier version of this
         // did) so a successful DEL and the shadow clear both reflect the same
-        // underlying fact -- the reset actually landed everywhere -- rather than
-        // clearing local state first and then finding out Redis was never told.
+        // underlying fact -- the reset landed on Redis and on this instance's
+        // shadow -- rather than clearing local state first and then finding out
+        // Redis was never told.
+        //
+        // Note that this only resets the local shadow: the in-memory shadow is
+        // per-instance, so a successful DEL does not invalidate the stale shadow
+        // entries held by *other* replicas (they age out via their own window TTL).
         //
         // If DEL fails or times out, the counter in Redis is NOT cleared: once
         // Redis recovers, a request on *another* instance (or this one, after the
-        // shadow's own TTL for this jti elapses) reads that stale, un-reset
+        // shadow's own TTL for this IP elapses) reads that stale, un-reset
         // count. This is bounded, not permanent -- the key already carries a TTL
         // of `window_seconds` from `INCR_WITH_EXPIRE_SCRIPT`, so the stale count
         // self-expires within one window at worst. Retrying the DEL durably
