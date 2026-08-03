@@ -14,6 +14,12 @@
 -- becomes `DELETE ... WHERE expires_at <= NOW()`. A row's lifetime is decided
 -- when it is journaled and never changes afterwards (`ON CONFLICT DO NOTHING`
 -- keeps the first write), so the column is stable.
+--
+-- The index on this column is created in migration 011, not here: it uses
+-- CREATE INDEX CONCURRENTLY (so a large existing table isn't locked for
+-- writes while it builds), which cannot run inside a transaction --
+-- and sqlx wraps each migration file in one by default. This migration only
+-- adds and backfills the column.
 DROP INDEX IF EXISTS access_token_revocation_outbox_expires_at_idx;
 
 ALTER TABLE access_token_revocation_outbox
@@ -26,6 +32,3 @@ UPDATE access_token_revocation_outbox
 
 ALTER TABLE access_token_revocation_outbox
     ALTER COLUMN expires_at SET NOT NULL;
-
-CREATE INDEX IF NOT EXISTS access_token_revocation_outbox_expires_at_idx
-    ON access_token_revocation_outbox (expires_at);
