@@ -108,7 +108,8 @@ async fn test_logout_revokes_presented_access_token() {
     // that here, otherwise jsonwebtoken v10 rejects the token's `aud` claim with
     // InvalidAudience.
     let issuer = std::env::var("JWT_ISSUER").unwrap_or_else(|_| "app-home-services".to_string());
-    let audience = std::env::var("JWT_AUDIENCE").unwrap_or_else(|_| "app-home-services".to_string());
+    let audience =
+        std::env::var("JWT_AUDIENCE").unwrap_or_else(|_| "app-home-services".to_string());
     let mut validation = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::HS256);
     validation.set_issuer(&[&issuer]);
     validation.set_audience(&[&audience]);
