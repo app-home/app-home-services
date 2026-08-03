@@ -17,7 +17,8 @@ async fn test_logout_with_valid_session_returns_200() {
         .post("http://localhost:3000/api/auth/login/password")
         .json(&serde_json::json!({
             "username": "admin",
-            "password": std::env::var("DEFAULT_USER_PASSWORD").unwrap_or_else(|_| "password".to_string())
+            "password": std::env::var("DEFAULT_USER_PASSWORD")
+                .unwrap_or_else(|_| "password".to_string())
         }))
         .send()
         .await
@@ -71,7 +72,8 @@ async fn test_logout_revokes_presented_access_token() {
         .post("http://localhost:3000/api/auth/login/password")
         .json(&serde_json::json!({
             "username": "admin",
-            "password": std::env::var("DEFAULT_USER_PASSWORD").unwrap_or_else(|_| "password".to_string())
+            "password": std::env::var("DEFAULT_USER_PASSWORD")
+                .unwrap_or_else(|_| "password".to_string())
         }))
         .send()
         .await
