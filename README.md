@@ -175,7 +175,7 @@ Only requests arriving from an IP listed in `TRUSTED_PROXY_IPS` may use `X-Forwa
 The rate limiter backend is chosen automatically at startup:
 
 - **`REDIS_URL` unset (default):** in-memory counters (`MemoryRateLimiter`). Only safe for a single running instance -- counters are lost on restart and are not shared with other replicas.
-- **`REDIS_URL` set:** Redis-backed counters (`RedisRateLimiter`), incremented atomically via a Lua script. Counters are shared across every instance connected to the same Redis, so the limit stays effective when the service is scaled horizontally or restarted. If Redis is temporarily unreachable, the limiter fails open (allows the request) and logs an error, rather than blocking every login/refresh -- this is observable via metrics, see Metrics & Alerting below.
+- **`REDIS_URL` set:** Redis-backed counters (`RedisRateLimiter`), incremented atomically via a Lua script. Counters are shared across every instance connected to the same Redis, so the limit stays effective when the service is scaled horizontally or restarted. If Redis is temporarily unreachable, the limiter falls back to an in-memory per-instance budget (each instance still enforces its own attempt limit; cross-instance coordination is lost until Redis recovers) and logs an error -- observable via metrics, see Metrics & Alerting below.
 
 ### CORS
 
@@ -374,7 +374,7 @@ This does not require credentials, so it should still only be reachable from ins
 
 | Metric | Type | Labels | Description |
 | -------- | ------ | -------- | ------------- |
-| `rate_limiter_redis_errors_total` | Counter | `scope="login"` \| `scope="refresh"` | Cumulative count of Redis errors encountered by the rate limiter (i.e. every time it failed open and allowed a request through instead of enforcing the limit). Absent/zero when running on the in-memory backend (`REDIS_URL` unset), since that backend has no equivalent failure mode. Resets to 0 on process restart. Polled from the rate limiter's internal counter and republished every 15 seconds. |
+| `rate_limiter_redis_errors_total` | Counter | `scope="login"` \| `scope="refresh"` | Cumulative count of Redis errors encountered by the rate limiter. Each error means the limiter fell back to its in-memory per-instance budget (see #89) instead of enforcing the shared Redis counter, so cross-instance coordination was unavailable for that operation. Absent/zero when running on the in-memory backend (`REDIS_URL` unset), since that backend has no equivalent failure mode. Resets to 0 on process restart. Polled from the rate limiter's internal counter and republished every 15 seconds. |
 | `access_token_blacklist_redis_errors_total` | Counter | — | Cumulative count of Redis errors encountered by the access-token revocation list (i.e. every time it failed open and treated an unrevoked-or-unknown token as valid instead of enforcing revocation). Absent/zero on the in-memory backend (`REDIS_URL` unset). Resets to 0 on process restart. Polled and republished every 15 seconds, same cadence as the rate limiter counter. |
 | `access_token_revocation_outbox_pending` | Gauge | — | Number of journaled access-token revocations not yet flushed to Redis (rows currently in `access_token_revocation_outbox`). Only meaningful on the Redis blacklist backend (`REDIS_URL` set); the in-memory backend never journals, so this stays at 0. Republished by the durable-revocation flush worker on every sweep (see `REVOCATION_FLUSH_INTERVAL_SECONDS`). Sustained non-zero is a sign Redis has been down long enough to accumulate a backlog -- see `docs/alerting.md`. |
 
@@ -406,7 +406,7 @@ METRICS_ALLOWED_IPS=10.0.0.5,10.0.0.6
 
 Example alert rules live in `prometheus/alerts.yml`:
 
-- **`RedisRateLimiterFailingOpen`** (`severity: warning`) fires when `rate_limiter_redis_errors_total` increases at all within a 5-minute window.
+- **`RedisRateLimiterDegraded`** (`severity: warning`) fires when `rate_limiter_redis_errors_total` increases at all within a 5-minute window -- the limiter is running on its in-memory per-instance budget instead of the shared Redis counters (see #89).
 - **`RedisAccessTokenBlacklistFailingOpen`** (`severity: critical`) fires the same way on `access_token_blacklist_redis_errors_total` -- rated a notch above the rate-limiter alert because a failing-open revocation list means a token the user explicitly revoked keeps working, not just a weakened brute-force defense.
 - **`AccessTokenRevocationBacklogAccumulating`** (`severity: warning`) fires when the durable-revocation backlog (`access_token_revocation_outbox_pending`) stays above 0 for 5 minutes straight, meaning journaled revocations are accumulating because Redis has been down.
 
@@ -429,7 +429,7 @@ The two error-counter alerts start deliberately low (`> 0`) since there's no bas
 - Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
 - `/api/health` actively checks database connectivity (`SELECT 1` with a 2s timeout, `503` on failure) rather than always reporting healthy -- see Database Connection Pool above
 - Session state transitions are one-way (active → inactive)
-- Access tokens are revocable: each carries a unique `jti`, logout blacklists the presented token until its natural expiry, and every authenticated request re-checks the revocation list (see #88). The blacklist is backed by Redis when `REDIS_URL` is set (shared across instances) and is in-memory otherwise (single instance only); if the backend is unavailable the check fails open, consistent with the rate limiter. Revocation is *durable* on the Redis backend (see #140): if Redis rejects a revoke at logout time, it's journaled in Postgres and a background worker retries it until it lands, so a Redis outage can delay -- but never silently drop -- a revocation
+- Access tokens are revocable: each carries a unique `jti`, logout blacklists the presented token until its natural expiry, and every authenticated request re-checks the revocation list (see #88). The blacklist is backed by Redis when `REDIS_URL` is set (shared across instances) and is in-memory otherwise (single instance only); if the backend is unavailable the check fails open and treats the token as not revoked. Revocation is *durable* on the Redis backend (see #140): if Redis rejects a revoke at logout time, it's journaled in Postgres and a background worker retries it until it lands, so a Redis outage can delay -- but never silently drop -- a revocation
 - Sessions record the `auth_method` used to create them ("password" / "google_oauth"), so logout/refresh audit entries reflect the real method instead of assuming one
 - Redis connections support password auth (`redis://:password@host:port`); TLS is not crate-native today -- see `docs/redis-security.md` for the documented decision and when to revisit it
 - `admin` never queries `auth`'s `users` table directly -- identity fields are read through the `UserDirectory` port, and role data lives in admin's own `user_roles` table (see `docs/modules/admin.md`)

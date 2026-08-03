@@ -160,9 +160,8 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedUser {
 
         // Revoked access tokens (e.g. after logout, see #88) are rejected before
         // the request reaches the handler. If the blacklist backend is unavailable
-        // the check fails open -- the token is allowed -- matching the rate
-        // limiter's posture, so a Redis outage degrades availability, not every
-        // authenticated request.
+        // the check fails open -- the token is allowed -- so a Redis outage degrades
+        // revocation, not every authenticated request.
         match blacklist.is_revoked(claims.jti).await {
             Ok(true) => {
                 tracing::debug!(
