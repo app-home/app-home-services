@@ -1,4 +1,4 @@
-use app_home_services::domain::entities::user::{NewUser, User};
+use auth::domain::entities::user::{NewUser, User};
 use shared::domain::value_objects::auth_provider::AuthProvider;
 use shared::domain::value_objects::email::Email;
 use shared::domain::value_objects::hashed_password::HashedPassword;

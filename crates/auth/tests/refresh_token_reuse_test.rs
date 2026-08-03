@@ -10,18 +10,17 @@ use shared::domain::value_objects::email::Email;
 use shared::domain::value_objects::hashed_password::HashedPassword;
 use uuid::Uuid;
 
-use app_home_services::application::ports::jwt_service::{
+use auth::application::ports::jwt_service::{
     AccessTokenClaims, JwtService, RefreshTokenClaims, TokenPair,
 };
-use app_home_services::application::ports::session_repository::SessionRepository;
-use app_home_services::application::ports::user_repository::UserRepository;
-use app_home_services::application::use_cases::logout::logout;
-use app_home_services::application::use_cases::refresh_token::refresh_token;
-use app_home_services::domain::entities::session::{NewSession, Session};
-use app_home_services::domain::entities::user::{NewUser, User};
-use app_home_services::domain::entities::user_action::{NewUserAction, UserAction};
-use app_home_services::domain::errors::AuthError;
+use auth::application::ports::session_repository::SessionRepository;
+use auth::application::ports::user_repository::UserRepository;
+use auth::application::use_cases::refresh_token::refresh_token;
 use auth::config::auth_settings::AuthSettings;
+use auth::domain::entities::session::{NewSession, Session};
+use auth::domain::entities::user::{NewUser, User};
+use auth::domain::entities::user_action::{NewUserAction, UserAction};
+use auth::domain::errors::AuthError;
 
 type SharedSessions = std::sync::Arc<Mutex<HashMap<Uuid, Session>>>;
 
@@ -118,19 +117,19 @@ impl MockUserRepository {
 #[async_trait]
 impl UserRepository for MockUserRepository {
     async fn find_by_username(&self, _username: &str) -> Result<Option<User>, AuthError> {
-        unimplemented!("not used by logout/refresh_token")
+        unimplemented!("not used by refresh_token")
     }
     async fn find_by_email(&self, _email: &str) -> Result<Option<User>, AuthError> {
-        unimplemented!("not used by logout/refresh_token")
+        unimplemented!("not used by refresh_token")
     }
     async fn find_by_id(&self, _id: Uuid) -> Result<Option<User>, AuthError> {
-        unimplemented!("not used by logout/refresh_token")
+        unimplemented!("not used by refresh_token")
     }
     async fn create(&self, _user: NewUser) -> Result<User, AuthError> {
-        unimplemented!("not used by logout/refresh_token")
+        unimplemented!("not used by refresh_token")
     }
     async fn create_user_action(&self, _action: NewUserAction) -> Result<UserAction, AuthError> {
-        unimplemented!("not used by logout/refresh_token")
+        unimplemented!("not used by refresh_token")
     }
 
     async fn find_aggregate_by_id(&self, id: Uuid) -> Result<Option<UserAggregate>, AuthError> {
@@ -161,14 +160,14 @@ impl UserRepository for MockUserRepository {
         &self,
         _username: &str,
     ) -> Result<Option<UserAggregate>, AuthError> {
-        unimplemented!("not used by logout/refresh_token")
+        unimplemented!("not used by refresh_token")
     }
 
     async fn find_aggregate_by_email(
         &self,
         _email: &str,
     ) -> Result<Option<UserAggregate>, AuthError> {
-        unimplemented!("not used by logout/refresh_token")
+        unimplemented!("not used by refresh_token")
     }
 
     async fn save_aggregate(
@@ -228,6 +227,8 @@ fn test_settings() -> AuthSettings {
         default_user_email: "admin@example.com".to_string(),
         google_client_id: String::new(),
         jwt_secret: "irrelevant".to_string(),
+        jwt_issuer: "app-home-services".to_string(),
+        jwt_audience: "app-home-services".to_string(),
         access_token_expiry_minutes: 15,
         refresh_token_expiry_days: 7,
     }
@@ -236,112 +237,136 @@ fn test_settings() -> AuthSettings {
 const TEST_BCRYPT_COST: u32 = 4;
 
 #[tokio::test]
-async fn logout_reports_google_oauth_auth_method_not_password() {
+async fn reusing_invalidated_refresh_token_revokes_all_sessions_for_user() {
     let user_id = Uuid::now_v7();
-    let session_id = Uuid::now_v7();
+    let old_session_id = Uuid::now_v7();
+    let other_session_id = Uuid::now_v7();
 
     let sessions = shared_sessions();
-    let hash =
-        HashedPassword::new(bcrypt::hash("some-refresh-token", TEST_BCRYPT_COST).unwrap()).unwrap();
-    let session = Session::new(
-        session_id,
+
+    let old_hash =
+        HashedPassword::new(bcrypt::hash("old-refresh-token", TEST_BCRYPT_COST).unwrap()).unwrap();
+    let old_session = Session::new(
+        old_session_id,
         user_id,
-        hash,
+        old_hash,
         Utc::now() + Duration::days(7),
-        true,
+        false,
         Utc::now(),
-        AuthMethod::GoogleOAuth,
+        AuthMethod::Password,
     );
-    let _session_repo = MockSessionRepository::new(sessions.clone());
-    let user_repo = MockUserRepository::new(sessions);
-    user_repo.insert(session);
 
-    let events = logout(&user_repo, user_id, session_id)
-        .await
-        .expect("logout should succeed");
-
-    assert_eq!(
-        events[0].auth_method(),
-        Some(AuthMethod::GoogleOAuth),
-        "the audit entry's auth_method must reflect how this session was actually \
-         created, not be hardcoded to \"password\""
-    );
-}
-
-#[tokio::test]
-async fn logout_reports_password_auth_method_for_a_password_session() {
-    let user_id = Uuid::now_v7();
-    let session_id = Uuid::now_v7();
-
-    let sessions = shared_sessions();
-    let hash =
-        HashedPassword::new(bcrypt::hash("some-refresh-token", TEST_BCRYPT_COST).unwrap()).unwrap();
-    let session = Session::new(
-        session_id,
+    let other_hash =
+        HashedPassword::new(bcrypt::hash("other-refresh-token", TEST_BCRYPT_COST).unwrap())
+            .unwrap();
+    let other_session = Session::new(
+        other_session_id,
         user_id,
-        hash,
+        other_hash,
         Utc::now() + Duration::days(7),
         true,
         Utc::now(),
         AuthMethod::Password,
     );
-    let _session_repo = MockSessionRepository::new(sessions.clone());
-    let user_repo = MockUserRepository::new(sessions);
-    user_repo.insert(session);
 
-    let events = logout(&user_repo, user_id, session_id)
-        .await
-        .expect("logout should succeed");
-
-    assert_eq!(events[0].auth_method(), Some(AuthMethod::Password));
-}
-
-#[tokio::test]
-async fn refresh_carries_google_oauth_auth_method_forward_after_rotation() {
-    let user_id = Uuid::now_v7();
-    let session_id = Uuid::now_v7();
-    let refresh_token_value = "google-session-refresh-token";
-
-    let sessions = shared_sessions();
-    let hash =
-        HashedPassword::new(bcrypt::hash(refresh_token_value, TEST_BCRYPT_COST).unwrap()).unwrap();
-    let session = Session::new(
-        session_id,
-        user_id,
-        hash,
-        Utc::now() + Duration::days(7),
-        true,
-        Utc::now(),
-        AuthMethod::GoogleOAuth,
-    );
     let session_repo = MockSessionRepository::new(sessions.clone());
     let user_repo = MockUserRepository::new(sessions);
-    user_repo.insert(session);
+    user_repo.insert(old_session);
+    user_repo.insert(other_session);
+
     let jwt_service = MockJwtService {
         claims: RefreshTokenClaims {
             sub: user_id,
-            session_id,
+            session_id: old_session_id,
+            iss: "app-home-services".to_string(),
+            aud: "app-home-services".to_string(),
             exp: 9_999_999_999,
             iat: 1,
         },
     };
     let settings = test_settings();
 
-    let result = refresh_token(&user_repo, &jwt_service, refresh_token_value, &settings)
-        .await
-        .expect("refresh should succeed");
+    let result = refresh_token(
+        &user_repo,
+        &jwt_service,
+        "stolen-old-refresh-token",
+        &settings,
+    )
+    .await;
 
-    assert_eq!(
-        result.auth_method,
-        AuthMethod::GoogleOAuth,
-        "the audit entry's auth_method must reflect the original session's method, \
-         not be reset to \"password\" on rotation"
+    assert!(
+        matches!(result, Err(AuthError::SessionInvalidated)),
+        "expected SessionInvalidated, got {result:?}"
     );
 
-    let new_session = session_repo
-        .find_by_id(result.session_id)
-        .await
-        .unwrap()
-        .expect("rotated session should exist");
-    assert_eq!(new_session.auth_method(), &AuthMethod::GoogleOAuth);
+    let remaining_active = session_repo.find_active_by_user_id(user_id).await.unwrap();
+
+    assert!(
+        remaining_active.is_empty(),
+        "all sessions for the user should be revoked after reuse is detected, found: {remaining_active:?}"
+    );
+}
+
+#[tokio::test]
+async fn legitimate_refresh_of_an_active_session_does_not_touch_other_sessions() {
+    let user_id = Uuid::now_v7();
+    let active_session_id = Uuid::now_v7();
+    let other_session_id = Uuid::now_v7();
+
+    let sessions = shared_sessions();
+    let real_refresh_token = "real-refresh-token";
+
+    let active_hash =
+        HashedPassword::new(bcrypt::hash(real_refresh_token, TEST_BCRYPT_COST).unwrap()).unwrap();
+    let active_session = Session::new(
+        active_session_id,
+        user_id,
+        active_hash,
+        Utc::now() + Duration::days(7),
+        true,
+        Utc::now(),
+        AuthMethod::Password,
+    );
+
+    let other_hash =
+        HashedPassword::new(bcrypt::hash("unrelated-token", TEST_BCRYPT_COST).unwrap()).unwrap();
+    let other_session = Session::new(
+        other_session_id,
+        user_id,
+        other_hash,
+        Utc::now() + Duration::days(7),
+        true,
+        Utc::now(),
+        AuthMethod::Password,
+    );
+
+    let session_repo = MockSessionRepository::new(sessions.clone());
+    let user_repo = MockUserRepository::new(sessions);
+    user_repo.insert(active_session);
+    user_repo.insert(other_session);
+
+    let jwt_service = MockJwtService {
+        claims: RefreshTokenClaims {
+            sub: user_id,
+            session_id: active_session_id,
+            iss: "app-home-services".to_string(),
+            aud: "app-home-services".to_string(),
+            exp: 9_999_999_999,
+            iat: 1,
+        },
+    };
+    let settings = test_settings();
+
+    let result = refresh_token(&user_repo, &jwt_service, real_refresh_token, &settings).await;
+
+    assert!(
+        result.is_ok(),
+        "expected a successful refresh, got {result:?}"
+    );
+
+    let remaining_active = session_repo.find_active_by_user_id(user_id).await.unwrap();
+
+    assert_eq!(remaining_active.len(), 2);
+    assert!(remaining_active.iter().any(|s| s.id() == other_session_id));
+    assert!(!remaining_active.iter().any(|s| s.id() == active_session_id));
 }

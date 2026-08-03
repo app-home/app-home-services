@@ -5,12 +5,12 @@ use async_trait::async_trait;
 use chrono::Utc;
 use uuid::Uuid;
 
-use app_home_services::admin::adapters::inbound::responses::{UpdateRoleRequest, UserResponse};
-use app_home_services::admin::application::ports::admin_repository::AdminRepository;
-use app_home_services::admin::application::use_cases::{get_user, list_users, update_user_role};
-use app_home_services::admin::domain::entities::admin_user::AdminUser;
-use app_home_services::admin::domain::errors::AdminError;
-use app_home_services::admin::domain::value_objects::role::Role;
+use admin::adapters::inbound::responses::{UpdateRoleRequest, UserResponse};
+use admin::application::ports::admin_repository::AdminRepository;
+use admin::application::use_cases::{get_user, list_users, update_user_role};
+use admin::domain::entities::admin_user::AdminUser;
+use admin::domain::errors::AdminError;
+use admin::domain::value_objects::role::Role;
 
 // ---------------------------------------------------------------------------
 // Mock repository

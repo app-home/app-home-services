@@ -9,8 +9,8 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 
-use app_home_services::shared::ports::RateLimiter;
 use app_home_services::infrastructure::rate_limiter::redis::RedisRateLimiter;
+use app_home_services::shared::ports::RateLimiter;
 
 /// Deletes the rate-limit counters for 127.0.0.1 in both the login and refresh
 /// Redis namespaces so this test's calls are not blocked by state from a previous test.
@@ -100,7 +100,11 @@ async fn test_refresh_with_nonexistent_session_returns_401_not_500() {
 
     let jwt_secret = std::env::var("JWT_SECRET")
         .expect("JWT_SECRET must be set to the same value the running server uses");
-    let jwt_service = JwtServiceImpl::new(&jwt_secret, 15, 7);
+    let jwt_issuer =
+        std::env::var("JWT_ISSUER").unwrap_or_else(|_| "app-home-services".to_string());
+    let jwt_audience =
+        std::env::var("JWT_AUDIENCE").unwrap_or_else(|_| "app-home-services".to_string());
+    let jwt_service = JwtServiceImpl::new(&jwt_secret, 15, 7, &jwt_issuer, &jwt_audience);
 
     // Neither of these IDs was ever persisted, so the session lookup inside
     // refresh_token() will come back None -> AuthError::SessionNotFound.

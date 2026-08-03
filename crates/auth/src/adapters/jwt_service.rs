@@ -1,5 +1,5 @@
 use chrono::Utc;
-use jsonwebtoken::{DecodingKey, EncodingKey, Header, Validation};
+use jsonwebtoken::{EncodingKey, Header};
 use uuid::Uuid;
 
 use crate::application::ports::jwt_service::{
@@ -10,16 +10,26 @@ use crate::domain::errors::AuthError;
 #[derive(Clone)]
 pub struct JwtServiceImpl {
     encoding_key: EncodingKey,
-    decoding_key: DecodingKey,
+    verification: shared::auth::JwtVerification,
     access_expiry_minutes: i64,
     refresh_expiry_days: i64,
 }
 
 impl JwtServiceImpl {
-    pub fn new(secret: &str, access_expiry_minutes: i64, refresh_expiry_days: i64) -> Self {
+    pub fn new(
+        secret: &str,
+        access_expiry_minutes: i64,
+        refresh_expiry_days: i64,
+        issuer: &str,
+        audience: &str,
+    ) -> Self {
         Self {
             encoding_key: EncodingKey::from_secret(secret.as_bytes()),
-            decoding_key: DecodingKey::from_secret(secret.as_bytes()),
+            verification: shared::auth::JwtVerification::new(
+                secret,
+                issuer.to_string(),
+                audience.to_string(),
+            ),
             access_expiry_minutes,
             refresh_expiry_days,
         }
@@ -32,6 +42,9 @@ impl JwtService for JwtServiceImpl {
 
         let access_claims = AccessTokenClaims {
             sub: user_id,
+            jti: Uuid::now_v7(),
+            iss: self.verification.issuer.clone(),
+            aud: self.verification.audience.clone(),
             exp: now + (self.access_expiry_minutes as usize * 60),
             iat: now,
         };
@@ -39,6 +52,8 @@ impl JwtService for JwtServiceImpl {
         let refresh_claims = RefreshTokenClaims {
             sub: user_id,
             session_id,
+            iss: self.verification.issuer.clone(),
+            aud: self.verification.audience.clone(),
             exp: now + (self.refresh_expiry_days as usize * 86400),
             iat: now,
         };
@@ -58,24 +73,14 @@ impl JwtService for JwtServiceImpl {
     }
 
     fn validate_access_token(&self, token: &str) -> Result<AccessTokenClaims, AuthError> {
-        let token_data = jsonwebtoken::decode::<AccessTokenClaims>(
-            token,
-            &self.decoding_key,
-            &Validation::default(),
-        )
-        .map_err(|_| AuthError::TokenVerificationFailed)?;
-
-        Ok(token_data.claims)
+        self.verification
+            .decode::<AccessTokenClaims>(token)
+            .ok_or(AuthError::TokenVerificationFailed)
     }
 
     fn validate_refresh_token(&self, token: &str) -> Result<RefreshTokenClaims, AuthError> {
-        let token_data = jsonwebtoken::decode::<RefreshTokenClaims>(
-            token,
-            &self.decoding_key,
-            &Validation::default(),
-        )
-        .map_err(|_| AuthError::TokenVerificationFailed)?;
-
-        Ok(token_data.claims)
+        self.verification
+            .decode::<RefreshTokenClaims>(token)
+            .ok_or(AuthError::TokenVerificationFailed)
     }
 }

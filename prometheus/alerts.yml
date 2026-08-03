@@ -18,3 +18,50 @@ groups:
             open (allowing all requests through) for each one. See
             docs/alerting.md for context and for how to raise this
             threshold if it's firing too often on transient blips.
+  - name: app-home-services-access-token-blacklist
+    rules:
+      - alert: RedisAccessTokenBlacklistFailingOpen
+        # Same deliberately low starting threshold as the rate limiter alert:
+        # a failing-open access token revocation list means revoked tokens keep
+        # validating (a security degradation), so we want to hear about any
+        # Redis error at all. See docs/alerting.md.
+        #
+        # severity: critical (not warning, unlike the rate-limiter alert above):
+        # a failing-open revocation list means a token the user explicitly
+        # revoked (e.g. after a suspected compromise) keeps working, not just
+        # a weakened brute-force defense.
+        expr: increase(access_token_blacklist_redis_errors_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Redis access token blacklist is failing open"
+          description: >-
+            The Redis-backed access token revocation list has recorded
+            {{ $value }} Redis error(s) in the last 5 minutes and is failing
+            open: revoked access tokens will keep validating until the outage
+            clears. See docs/alerting.md for context.
+      - alert: AccessTokenRevocationBacklogAccumulating
+        # A backlog here means revocations journaled in Postgres (see #140)
+        # are not landing in Redis: Redis has been down long enough for the
+        # flush worker to fall behind. This is not an emergency by itself --
+        # each backlogged row was already successfully journaled, so it will
+        # be flushed once Redis recovers, PROVIDED Postgres stays up in the
+        # meantime (a simultaneous Postgres outage is a separate, more severe
+        # situation this alert does not cover -- see docs/alerting.md). Still
+        # worth a pager for as long as it persists: it's a live signal that the
+        # "failing open" posture is actively in effect for logged-out tokens.
+        expr: access_token_revocation_outbox_pending > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Access token revocations are backlogged in the outbox"
+          description: >-
+            The access-token revocation outbox has had a non-empty backlog
+            ({{ $value }} journaled revocation(s) as of the last sweep) for at
+            least 5 minutes straight, which means Redis has been down (or
+            unreachable) long enough for the flush worker to fall behind.
+            Tokens logged out during this window keep validating on other
+            instances until the backlog clears. See docs/alerting.md for
+            context.

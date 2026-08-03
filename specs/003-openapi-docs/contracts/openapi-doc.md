@@ -2,6 +2,11 @@
 
 **Feature**: `specs/003-openapi-docs` | **Date**: 2026-07-19
 
+> **Availability (since #86):** Both endpoints below are only registered when the
+> service is started with `ENABLE_SWAGGER=true` (default `false`). Without the
+> flag, `GET /api-docs/openapi.json` and `GET /swagger-ui` return `404` and the
+> service exposes no API surface via docs.
+
 This contract defines the two documentation surfaces and the guarantees the
 generated specification must satisfy. It is complementary to the endpoint
 contracts under `specs/002-audit-security-hardening/contracts/`,

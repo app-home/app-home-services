@@ -14,6 +14,13 @@ The OpenAPI document at `/api-docs/openapi.json` is generated at compile time by
 
 The `SwaggerUi` mount in `main.rs` serves both the JSON document and the interactive UI from the same `ApiDoc::openapi()` value.
 
+> **Note (since #86):** The mount is conditional on `ENABLE_SWAGGER=true` (default
+> `false`). With the flag unset, `/api-docs/openapi.json` and `/swagger-ui` return
+> `404` and are not registered at all. Local development: start with
+> `ENABLE_SWAGGER=true cargo run`. The `ApiDoc` struct itself is unaffected —
+> the spec is still built and validated by `cargo test` in-process regardless of
+> the runtime flag.
+
 ## Adding A New Public Endpoint
 
 1. **Add handler + DTOs**: Create the handler in `src/adapters/inbound/`. Add `#[derive(Serialize, Deserialize, ToSchema)]` to any new request/response structs.
@@ -72,9 +79,19 @@ cargo test --test responses_serde
 For external validation:
 
 ```bash
-cargo run &
+ENABLE_SWAGGER=true cargo run &
+SERVER_PID=$!
+
+# cargo run returns immediately, before the binary is even compiled -- wait
+# for the health endpoint to answer instead of racing it with a fixed sleep.
+until curl -sf http://localhost:3000/api/health > /dev/null 2>&1; do
+  sleep 1
+done
+
 curl http://localhost:3000/api-docs/openapi.json -o openapi.json
 npx @redocly/cli lint openapi.json
+
+kill "$SERVER_PID"
 ```
 
 ## Secrets Policy (FR-014)

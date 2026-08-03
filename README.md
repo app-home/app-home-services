@@ -38,12 +38,13 @@ User authentication service supporting local password login, Google OAuth, sessi
 
 | Variable | Required | Default | Description |
 | ---------- | ---------- | --------- | ------------- |
-| `DATABASE_URL` | Yes | — | PostgreSQL connection string |
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string. See the TLS notes in `.env.example`; `sslmode=disable` against a non-loopback host aborts startup (see `docs/postgres-ssl.md`). |
 | `DB_MAX_CONNECTIONS` | No | `10` | Max connections this instance's pool will open. With N instances against one Postgres, they together open up to `N * DB_MAX_CONNECTIONS` -- keep that under Postgres's own `max_connections`. See Database Connection Pool below. |
 | `DB_MIN_CONNECTIONS` | No | `0` | Idle connections the pool tries to keep pre-warmed. `0` = open lazily on demand. |
 | `DB_ACQUIRE_TIMEOUT_SECONDS` | No | `30` | How long a request waits for a pool connection before failing with a clear timeout instead of hanging. |
 | `DB_IDLE_TIMEOUT_SECONDS` | No | `600` | How long a connection may sit idle before being closed. `0` disables idle recycling. |
 | `DB_MAX_LIFETIME_SECONDS` | No | `1800` | Max lifetime of a connection before forced recycling, guarding against silently-stale connections behind a proxy/load balancer. `0` disables this. |
+| `DB_REQUIRE_SSL` | No | `false` | Force the database connection to use `sslmode=verify-full`, replacing any `sslmode` in `DATABASE_URL`. For environments that demand an encrypted, certificate-verified Postgres connection (e.g. production). |
 | `SERVER_HOST` | No | `127.0.0.1` | HTTP server bind host. **Set to `0.0.0.0` when running in a container** (see Container Image below) or anywhere else the process needs to accept connections from outside its own host -- `127.0.0.1` only accepts local connections. |
 | `SERVER_PORT` | No | `3000` | HTTP server bind port |
 | `DEFAULT_USER_USERNAME` | No | `admin` | Default local user username |
@@ -53,12 +54,16 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `JWT_SECRET` | Yes | — | HMAC secret for signing JWT tokens. Must be at least 32 bytes **and** have at least 8 unique characters (rejects both short and low-entropy secrets, e.g. `aaaa...aaaa`) -- generate one with `openssl rand -hex 64` |
 | `ACCESS_TOKEN_EXPIRY_MINUTES` | No | `15` | Access token lifetime in minutes |
 | `REFRESH_TOKEN_EXPIRY_DAYS` | No | `7` | Refresh token lifetime in days |
+| `JWT_ISSUER` | No | `app-home-services` | `iss` claim minted/required on tokens; set a distinct value per environment so tokens can't be replayed across environments (see #87) |
+| `JWT_AUDIENCE` | No | `app-home-services` | `aud` claim minted/required on tokens; same cross-environment replay rationale as `JWT_ISSUER` |
 | `RATE_LIMIT_MAX_ATTEMPTS` | No | `10` | Max failed login attempts per IP within the time window |
 | `RATE_LIMIT_WINDOW_SECONDS` | No | `300` | Rate limit window in seconds (default: 5 min) |
-| `REDIS_URL` | No | — | Redis URL for shared rate-limit counters; empty = in-memory (single instance only) |
+| `REDIS_URL` | No | — | Redis URL for shared rate-limit counters and the access-token revocation list; empty = in-memory (single instance only) |
+| `REVOCATION_FLUSH_INTERVAL_SECONDS` | No | `5` | How often (seconds) the durable-revocation flush worker retries journaled revocations against Redis (see #140); only meaningful when `REDIS_URL` is set |
 | `CORS_ALLOWED_ORIGINS` | No | — | Comma-separated allowed origins; empty = same-origin only |
 | `TRUSTED_PROXY_IPS` | No | — | Comma-separated reverse proxy IPs trusted to set X-Forwarded-For/X-Real-IP; empty = never trusted |
 | `METRICS_ALLOWED_IPS` | No | — | Comma-separated IPs allowed to reach `GET /metrics` (e.g. your Prometheus server); empty = no restriction. Loopback is always allowed regardless. See Metrics & Alerting below. |
+| `ENABLE_SWAGGER` | No | `false` | Serve Swagger UI and the OpenAPI spec at `/swagger-ui` and `/api-docs/openapi.json`. Disabled by default so a publicly reachable instance exposes no API surface; set to `true` for local development. See API Documentation below. |
 
 ## API Endpoints
 
@@ -95,7 +100,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 
 ### API Documentation (OpenAPI / Swagger)
 
-The service exposes an auto-generated OpenAPI 3.x specification and an interactive Swagger UI:
+The service exposes an auto-generated OpenAPI 3.x specification and an interactive Swagger UI **only when `ENABLE_SWAGGER=true`** (default: disabled). Without the flag, both routes return `404`, so a publicly reachable instance does not leak its API surface. For local development, start with `ENABLE_SWAGGER=true`:
 
 | Resource | URL |
 | ---------- | ----- |
@@ -117,14 +122,14 @@ Successful login returns:
 }
 ```
 
-- `access_token`: Short-lived JWT (default 15 min) for authenticating subsequent requests.
+- `access_token`: Short-lived JWT (default 15 min) for authenticating subsequent requests. Each token carries a unique `jti` so it can be revoked individually (see Logout below).
 - `refresh_token`: Longer-lived JWT (default 7 days) used with `/api/auth/refresh` to obtain a new token pair.
 
 Failed logins return `401` with `{"error": "Invalid username or password"}`. Password verification always performs exactly one bcrypt check (a real one, or a dummy one of equal cost when the username doesn't exist or has no password set), so a nonexistent username can't be told apart from a wrong password by response time; a flat 50 ms delay is layered on top as additional defense-in-depth.
 
 ### Using the Auth Middleware
 
-Protected endpoints (like `/api/auth/logout`) require the `Authorization: Bearer <access_token>` header. The server validates the token's signature and expiry, then extracts the `user_id` from its claims.
+Protected endpoints (like `/api/auth/logout`) require the `Authorization: Bearer <access_token>` header. The server validates the token's signature, expiry, `iss`/`aud`, then checks the token's `jti` against the access-token revocation list before extracting the `user_id` from its claims.
 
 ### Logout
 
@@ -136,7 +141,7 @@ Protected endpoints (like `/api/auth/logout`) require the `Authorization: Bearer
 { "status": "logged_out" }
 ```
 
-The session is marked inactive (one-way transition). Subsequent refresh attempts with that session's tokens will be rejected.
+The session is marked inactive (one-way transition). Subsequent refresh attempts with that session's tokens will be rejected. The presented access token is additionally revoked (by its `jti`) for the rest of its lifetime, so a stolen access token stops validating as soon as the victim logs out (see #88).
 
 ### Token Refresh
 
@@ -271,6 +276,10 @@ For the other bounded contexts, see:
 | `006_create_user_profiles_table.sql` | User profiles table for the profiles context |
 | `007_add_role_to_users.sql` | Adds `role` column (`user` / `admin`) to users table (superseded by 008) |
 | `008_create_admin_user_roles.sql` | Moves `role` into its own `user_roles` table owned by the admin context; drops `users.role` |
+| `009_create_access_token_revocation_outbox.sql` | Durable-retry outbox for access token revocations Redis rejects (see #140) |
+| `010_access_token_revocation_outbox_expires_at.sql` | Adds the indexed `expires_at` column the outbox expiry sweep uses (`timestamptz + interval` can't be indexed directly) |
+| `011_access_token_revocation_outbox_expires_at_idx.sql` | Creates the `expires_at` index concurrently (its own `-- no-transaction` migration, since `CREATE INDEX CONCURRENTLY` can't run inside a transaction) |
+| `012_access_token_revocation_outbox_expires_at_repair.sql` | Self-healing guard: drops invalid `_ccnew`/`_ccold` leftovers and rebuilds the `expires_at` index (only if it's invalid) when migration 011's concurrent build left it broken |
 
 Migrations run automatically on startup.
 
@@ -366,6 +375,8 @@ This does not require credentials, so it should still only be reachable from ins
 | Metric | Type | Labels | Description |
 | -------- | ------ | -------- | ------------- |
 | `rate_limiter_redis_errors_total` | Counter | `scope="login"` \| `scope="refresh"` | Cumulative count of Redis errors encountered by the rate limiter (i.e. every time it failed open and allowed a request through instead of enforcing the limit). Absent/zero when running on the in-memory backend (`REDIS_URL` unset), since that backend has no equivalent failure mode. Resets to 0 on process restart. Polled from the rate limiter's internal counter and republished every 15 seconds. |
+| `access_token_blacklist_redis_errors_total` | Counter | — | Cumulative count of Redis errors encountered by the access-token revocation list (i.e. every time it failed open and treated an unrevoked-or-unknown token as valid instead of enforcing revocation). Absent/zero on the in-memory backend (`REDIS_URL` unset). Resets to 0 on process restart. Polled and republished every 15 seconds, same cadence as the rate limiter counter. |
+| `access_token_revocation_outbox_pending` | Gauge | — | Number of journaled access-token revocations not yet flushed to Redis (rows currently in `access_token_revocation_outbox`). Only meaningful on the Redis blacklist backend (`REDIS_URL` set); the in-memory backend never journals, so this stays at 0. Republished by the durable-revocation flush worker on every sweep (see `REVOCATION_FLUSH_INTERVAL_SECONDS`). Sustained non-zero is a sign Redis has been down long enough to accumulate a backlog -- see `docs/alerting.md`. |
 
 ### Scraping
 
@@ -393,7 +404,13 @@ METRICS_ALLOWED_IPS=10.0.0.5,10.0.0.6
 
 ### Alerting
 
-An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limiter_redis_errors_total` increases at all within a 5-minute window. The threshold starts deliberately low (`> 0`) since there's no baseline yet for what "normal" transient Redis noise looks like in this deployment -- see [`docs/alerting.md`](docs/alerting.md) for the full reasoning and a concrete process for raising the threshold once you have a couple of weeks of real data.
+Example alert rules live in `prometheus/alerts.yml`:
+
+- **`RedisRateLimiterFailingOpen`** (`severity: warning`) fires when `rate_limiter_redis_errors_total` increases at all within a 5-minute window.
+- **`RedisAccessTokenBlacklistFailingOpen`** (`severity: critical`) fires the same way on `access_token_blacklist_redis_errors_total` -- rated a notch above the rate-limiter alert because a failing-open revocation list means a token the user explicitly revoked keeps working, not just a weakened brute-force defense.
+- **`AccessTokenRevocationBacklogAccumulating`** (`severity: warning`) fires when the durable-revocation backlog (`access_token_revocation_outbox_pending`) stays above 0 for 5 minutes straight, meaning journaled revocations are accumulating because Redis has been down.
+
+The two error-counter alerts start deliberately low (`> 0`) since there's no baseline yet for what "normal" transient Redis noise looks like in this deployment -- see [`docs/alerting.md`](docs/alerting.md) for the full reasoning and a concrete process for raising the threshold once you have a couple of weeks of real data.
 
 ## Security
 
@@ -412,6 +429,7 @@ An example alert rule lives in `prometheus/alerts.yml`, firing when `rate_limite
 - Startup aborts on database connection failure, default-user seed check failure, or Redis connection failure (when configured)
 - `/api/health` actively checks database connectivity (`SELECT 1` with a 2s timeout, `503` on failure) rather than always reporting healthy -- see Database Connection Pool above
 - Session state transitions are one-way (active → inactive)
+- Access tokens are revocable: each carries a unique `jti`, logout blacklists the presented token until its natural expiry, and every authenticated request re-checks the revocation list (see #88). The blacklist is backed by Redis when `REDIS_URL` is set (shared across instances) and is in-memory otherwise (single instance only); if the backend is unavailable the check fails open, consistent with the rate limiter. Revocation is *durable* on the Redis backend (see #140): if Redis rejects a revoke at logout time, it's journaled in Postgres and a background worker retries it until it lands, so a Redis outage can delay -- but never silently drop -- a revocation
 - Sessions record the `auth_method` used to create them ("password" / "google_oauth"), so logout/refresh audit entries reflect the real method instead of assuming one
 - Redis connections support password auth (`redis://:password@host:port`); TLS is not crate-native today -- see `docs/redis-security.md` for the documented decision and when to revisit it
 - `admin` never queries `auth`'s `users` table directly -- identity fields are read through the `UserDirectory` port, and role data lives in admin's own `user_roles` table (see `docs/modules/admin.md`)

@@ -56,10 +56,16 @@ Shared request/response types for OpenAPI:
 
 **`AuthenticatedUser`** — JWT Bearer extractor (`FromRequestParts`):
 1. Extracts `Authorization: Bearer <token>` header
-2. Decodes via `DecodingKey` from `Extension<Arc<DecodingKey>>`
-3. Returns `AuthenticatedUser { user_id: Uuid }` or `AuthRejection` (401)
+2. Decodes via `Extension<Arc<JwtVerification>>` — `JwtVerification` holds the `DecodingKey` plus the service's `iss`/`aud` (`JWT_ISSUER`/`JWT_AUDIENCE`) and enforces both on every token (`Validation::new(HS256)` + `set_issuer`/`set_audience`); a token without or with foreign `iss`/`aud` is rejected (see #87)
+3. Checks `Extension<Arc<dyn AccessTokenBlacklist>>` — a revoked token (`jti` in the list, see #88) is rejected with 401; if the backend errors the check **fails open** and the token is allowed
+4. Returns `AuthenticatedUser { user_id: Uuid, jti: Uuid, exp: usize }` or `AuthRejection` (401)
 
-Used by profiles, admin, and auth/logout handlers.
+Used by profiles, admin, and auth/logout handlers (which use `jti`/`exp` to revoke the presented token on logout). The same `JwtVerification::decode` is reused by `auth`'s `JwtServiceImpl` for access/refresh token validation.
+
+## Ports
+
+- **`RateLimiter`** — `check`, `record_attempt`, `try_check_and_record`, `remaining_attempts`, `reset`; implemented by `infrastructure::rate_limiter::{memory, redis}`.
+- **`AccessTokenBlacklist`** — `revoke(jti, ttl_secs)`, `is_revoked(jti)`; implemented by `infrastructure::access_token_blacklist::{memory, redis, durable}` (`durable` wraps `redis` with Postgres-journaled retry, see #140). Both methods return `Result<_, BlacklistError>`; callers fail open on `Err` (see #88).
 
 ## Networking (`net`)
 
@@ -88,7 +94,10 @@ pub struct Settings {
     pub db_acquire_timeout_seconds: u64,
     pub db_idle_timeout_seconds: u64,
     pub db_max_lifetime_seconds: u64,
+    pub db_require_ssl: bool,
     pub metrics_allowed_ips: Vec<IpAddr>,
+    pub enable_swagger: bool,
+    pub revocation_flush_interval_seconds: u64,
 }
 ```
 

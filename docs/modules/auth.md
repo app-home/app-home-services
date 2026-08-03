@@ -8,7 +8,7 @@ Authentication and session management bounded context. Handles user login (passw
 
 | Crate | Role |
 |-------|------|
-| `shared` | Domain events, value objects (`Email`, `HashedPassword`, `AuthMethod`), `EventBus`, `RateLimiter` trait, `AuthenticatedUser` extractor, `net::resolve_client_ip` |
+| `shared` | Domain events, value objects (`Email`, `HashedPassword`, `AuthMethod`), `EventBus`, `RateLimiter`/`AccessTokenBlacklist` traits, `AuthenticatedUser` extractor, `net::resolve_client_ip` |
 
 ## Domain Layer
 
@@ -87,11 +87,30 @@ Aggregate root containing `User + Vec<Session> + pending domain events`.
 |---------|-----------|-------------|
 | `PostgresUserRepo` | `UserRepository` | PostgreSQL user & user_action persistence |
 | `PostgresSessionRepo` | `SessionRepository` | Session CRUD with active/inactive tracking |
-| `JwtServiceImpl` | `JwtService` | JWT token generation with configurable expiry |
+| `JwtServiceImpl` | `JwtService` | JWT token generation with configurable expiry; access tokens carry a unique `jti` claim (see #88) |
 | `GoogleAuthProvider` | `AuthProvider` | Google ID token verification |
 | `AuditEventHandler` | — | Consumes `EventBus` events, persists to `user_actions` |
 | `MemoryRateLimiter` | `RateLimiter` | In-memory, single-instance safe |
 | `RedisRateLimiter` | `RateLimiter` | Redis-backed, multi-instance, fail-open |
+| `MemoryAccessTokenBlacklist` | `AccessTokenBlacklist` | In-memory, single-instance safe (see Access Token Revocation below) |
+| `RedisAccessTokenBlacklist` | `AccessTokenBlacklist` | Redis-backed, multi-instance, fail-open |
+| `DurableRevocationBlacklist` | `AccessTokenBlacklist` | Wraps the Redis adapter with Postgres-journaled durable retry (see #140) |
+
+### Access Token Revocation (#88)
+
+Access tokens are stateless JWTs, so signature/expiry validation alone can't stop a stolen token from being used after logout. Each access token therefore carries a unique `jti` claim, and logout blacklists the presented token for its remaining lifetime via the `AccessTokenBlacklist` port (`shared::ports`):
+
+| Adapter | Description |
+|---------|-------------|
+| `MemoryAccessTokenBlacklist` | In-memory (`HashMap<Uuid, Instant>` + TTL), never errors; single-instance safe only |
+| `RedisAccessTokenBlacklist` | `SET acl:revoked:{jti} 1 EX {ttl}` / `EXISTS`; shared across instances; surfaces `BlacklistError` on Redis failures |
+| `DurableRevocationBlacklist` | Decorator over the Redis backend (see #140): a revoke that Redis rejects is journaled in Postgres (`access_token_revocation_outbox`, migration 009) and retried by a flush worker until it lands — a Redis outage delays but never silently drops a revocation |
+
+- The `AuthenticatedUser` extractor (`shared::auth`) checks `is_revoked(jti)` on every authenticated request and rejects revoked tokens with 401.
+- Backend selection happens in `build_access_token_blacklist` (`infrastructure`), mirroring `build_rate_limiters`: Redis when `REDIS_URL` is set, in-memory otherwise. Unlike the rate limiters, an unreachable `REDIS_URL` is NOT fatal at startup — it logs a warning and falls back to in-memory, since the check fails open anyway.
+- **Fail-open**: if the backend errors, the check treats the token as not revoked (availability over strictness), matching `RateLimiter`. Redis failures are logged and counted in `access_token_blacklist_redis_errors_total` (polled in `main.rs`).
+- **Durable retry (#140)**: on the Redis backend, a logout whose `revoke` Redis rejects is journaled in Postgres and the logout still succeeds; the flush worker (spawned in `main.rs`, interval = `REVOCATION_FLUSH_INTERVAL_SECONDS`, default 5s) retries it until it lands. While journaled, *this* instance rejects the token immediately (in-memory pending set); other instances keep validating it until the flush lands it in Redis. That window is **not** simply the flush interval — it lasts as long as Redis is actually unreachable (which could be far longer than one interval), plus at most one more flush interval after Redis recovers (the next scheduled sweep is what notices Redis is back and lands the row). The interval controls retry *cadence*, not the total outage-driven wait. The only revocation that is never guaranteed is one issued while Redis AND Postgres are both down (the service is essentially degraded at that point anyway).
+- The blacklist entry's TTL is the token's remaining lifetime, so entries never outlive their token's natural expiry.
 
 ### AppState
 
@@ -120,6 +139,8 @@ trusted_proxy_ips: Vec<IpAddr>
 | `DEFAULT_USER_EMAIL` | `admin@example.com` | Seed user email |
 | `GOOGLE_CLIENT_ID` | (empty) | Google OAuth client ID |
 | `JWT_SECRET` | **required** | Min 32 bytes; entropy validated |
+| `JWT_ISSUER` | `app-home-services` | `iss` claim minted/required on tokens (see #87); set a distinct value per environment so tokens can't be replayed cross-env |
+| `JWT_AUDIENCE` | `app-home-services` | `aud` claim minted/required on tokens (see #87); same cross-env replay rationale as `JWT_ISSUER` |
 | `ACCESS_TOKEN_EXPIRY_MINUTES` | `15` | Access token TTL |
 | `REFRESH_TOKEN_EXPIRY_DAYS` | `7` | Refresh token TTL |
 
@@ -130,6 +151,7 @@ In `src/main.rs`:
 1. `PostgresUserRepo`, `PostgresSessionRepo` created from pool
 2. `JwtServiceImpl`, `GoogleAuthProvider` from auth settings
 3. Rate limiters via `build_rate_limiters()` (Redis or memory)
-4. `AppState::new(...)` bundles all dependencies
-5. Routes: `POST /api/auth/login/password`, `POST /api/auth/login/google`, `POST /api/auth/logout`, `POST /api/auth/refresh`
-6. `EventBus` receiver → `AuditEventHandler` (background task)
+4. Access token blacklist via `build_access_token_blacklist()` (Redis or memory) — registered as an `Extension` so the extractor and logout handler share it; on the Redis backend the durable-revocation flush worker is also spawned here
+5. `AppState::new(...)` bundles all dependencies
+6. Routes: `POST /api/auth/login/password`, `POST /api/auth/login/google`, `POST /api/auth/logout`, `POST /api/auth/refresh`
+7. `EventBus` receiver → `AuditEventHandler` (background task)

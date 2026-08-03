@@ -1,6 +1,8 @@
 use std::fmt;
 use std::net::IpAddr;
 
+use url::Url;
+
 #[derive(Clone)]
 pub struct Settings {
     pub database_url: String,
@@ -35,6 +37,13 @@ pub struct Settings {
     /// Postgres) that can drop long-lived connections without either side
     /// noticing immediately. `0` disables lifetime-based recycling.
     pub db_max_lifetime_seconds: u64,
+    /// When `true`, the connection to Postgres is forced to use
+    /// `sslmode=verify-full` regardless of what `DATABASE_URL` specifies: any
+    /// existing `sslmode` query parameter is replaced. This is the "production
+    /// demands an encrypted, certificate-verified connection" switch -- it
+    /// refuses to be undermined by an accidentally plaintext `sslmode=disable`
+    /// in the connection string. See `force_sslmode_verify_full`. See #85.
+    pub db_require_ssl: bool,
     /// IP addresses allowed to reach `GET /metrics` (e.g. the Prometheus server's
     /// IP). Resolved the same way as rate-limiting IPs -- honoring
     /// `X-Forwarded-For`/`X-Real-IP` only from `trusted_proxy_ips` -- so this works
@@ -50,6 +59,22 @@ pub struct Settings {
     /// `SERVER_HOST=0.0.0.0` (e.g. containers) and want `/metrics` locked down
     /// without standing up a full reverse-proxy/auth setup. See #83.
     pub metrics_allowed_ips: Vec<IpAddr>,
+    /// When `true`, Swagger UI and the combined OpenAPI spec are served at
+    /// `/swagger-ui` and `/api-docs/openapi.json`. When `false` (the default),
+    /// neither route is registered at all, so an attacker cannot enumerate the
+    /// full API surface from a publicly reachable instance. Enable this only
+    /// where interactive API documentation is actually needed (e.g. local
+    /// development). See #86.
+    pub enable_swagger: bool,
+    /// How often the durable-revocation flush worker sweeps the
+    /// `access_token_revocation_outbox` table and retries journaled revocations
+    /// against Redis (see #140). Only relevant when the Redis-backed blacklist
+    /// is in use (`REDIS_URL` set); the in-memory backend can't fail, so it has
+    /// nothing to journal. Lower values shrink the window in which a token
+    /// logged out during a Redis outage still validates on *other* instances
+    /// (this instance rejects it immediately via an in-memory pending set), at
+    /// the cost of more frequent `SELECT`/`DELETE` sweeps.
+    pub revocation_flush_interval_seconds: u64,
 }
 
 impl fmt::Debug for Settings {
@@ -77,16 +102,205 @@ impl fmt::Debug for Settings {
             )
             .field("db_idle_timeout_seconds", &self.db_idle_timeout_seconds)
             .field("db_max_lifetime_seconds", &self.db_max_lifetime_seconds)
+            .field("db_require_ssl", &self.db_require_ssl)
             .field("metrics_allowed_ips", &self.metrics_allowed_ips)
+            .field("enable_swagger", &self.enable_swagger)
+            .field(
+                "revocation_flush_interval_seconds",
+                &self.revocation_flush_interval_seconds,
+            )
             .finish()
     }
 }
 
+/// Canonical `sslmode` value from a `postgres://`-style `DATABASE_URL`, or
+/// `None` when the URL specifies neither (sqlx then defaults to `prefer`,
+/// which tries TLS but silently falls back to plaintext).
+///
+/// sqlx accepts both the `sslmode` key and the `ssl-mode` alias, treats the
+/// value case-insensitively (`DISABLE`, `Disable`, and `disable` are all the
+/// same mode), and -- like libpq -- resolves a duplicate key to its *last*
+/// occurrence, not its first (`?sslmode=require&sslmode=disable` connects with
+/// `disable`). This must match all three of those exactly: an early-returning
+/// `find_map` would validate against the first occurrence while sqlx itself
+/// connects with the last, letting a URL past validation that sqlx would
+/// actually open in plaintext. Lowercased so every caller can compare against a
+/// plain lowercase literal.
+///
+/// Uses `.last()`, not `.next_back()`: `Url::query_pairs()` returns
+/// `form_urlencoded::Parse`, which only implements the forward `Iterator`
+/// trait, not `DoubleEndedIterator` -- `.next_back()` doesn't compile against
+/// it (or against the `Filter` this builds on top of it). `.last()` gets the
+/// same "final matching pair" result by fully consuming the (short, already
+/// filtered) iterator instead. See #142 review (CodeRabbit).
+fn extract_sslmode(url: &Url) -> Option<String> {
+    url.query_pairs()
+        .filter(|(key, _)| key == "sslmode" || key == "ssl-mode")
+        .last()
+        .map(|(_, value)| value.to_lowercase())
+}
+
+/// Whether the database host is on the same machine as this process
+/// (`127.0.0.1`, `::1`, or the `localhost` hostname). Plaintext connections to
+/// such hosts never leave the machine, so `sslmode=disable` is acceptable there
+/// for local development.
+fn db_host_is_loopback(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        // The `url` crate surfaces IPv4 literals like `127.0.0.1` as a Domain,
+        // so parse the domain as an IP before falling back to hostname matches.
+        Some(url::Host::Domain(domain)) => {
+            domain.eq_ignore_ascii_case("localhost")
+                || domain
+                    .parse::<IpAddr>()
+                    .map(|ip| ip.is_loopback())
+                    .unwrap_or(false)
+        }
+        None => false,
+    }
+}
+
+/// Rejects a `DATABASE_URL` that would send credentials and data in plaintext
+/// over the network: `sslmode=disable` against a non-loopback database host is a
+/// fatal startup error, by design. The alternative -- starting anyway and
+/// streaming password hashes, tokens and user data unencrypted to a remote
+/// Postgres -- is the exact vulnerability this exists to close. See #85.
+pub fn validate_database_ssl(url: &str) -> Result<(), String> {
+    let parsed = Url::parse(url).map_err(|e| format!("DATABASE_URL is not a valid URL: {e}"))?;
+    if extract_sslmode(&parsed).as_deref() == Some("disable") && !db_host_is_loopback(&parsed) {
+        return Err(format!(
+            "DATABASE_URL uses sslmode=disable against a non-loopback database host ({:?}); this sends credentials and data in plaintext over the network. Use `?sslmode=verify-full`, or set DB_REQUIRE_SSL=true, for any non-local database. See .env.example.",
+            parsed.host_str()
+        ));
+    }
+    Ok(())
+}
+
+/// Non-fatal warning for a connection that can silently fall back to plaintext
+/// against a non-loopback database host -- i.e. no `sslmode` (the sqlx default,
+/// `prefer`, tries TLS but falls back to plaintext if the server doesn't support
+/// it), an explicit `prefer`, or `allow` (libpq/sqlx tries plaintext *first* and
+/// only upgrades to TLS if the server demands it -- the same plaintext-capable
+/// outcome as `prefer`, just with the attempt order reversed).
+/// `sslmode=disable` is not reported here because the remote-host case is
+/// already rejected by `validate_database_ssl`. See #85.
+pub fn database_ssl_warning(url: &str) -> Option<String> {
+    let parsed = Url::parse(url).ok()?;
+    if db_host_is_loopback(&parsed) {
+        return None;
+    }
+    let sslmode = extract_sslmode(&parsed);
+    if matches!(sslmode.as_deref(), None | Some("prefer") | Some("allow")) {
+        return Some(format!(
+            "DATABASE_URL targets a non-loopback database host ({:?}) without `sslmode=verify-full`; the default (`prefer`) silently falls back to plaintext if the server doesn't support TLS, and `allow` tries plaintext first. Use `?sslmode=verify-full` or set DB_REQUIRE_SSL=true.",
+            parsed.host_str()
+        ));
+    }
+    None
+}
+
+/// Rewrites a `DATABASE_URL` so it always connects with `sslmode=verify-full`,
+/// replacing any existing `sslmode`/`ssl-mode` value (including `disable`, in
+/// either key spelling or casing, and regardless of how many duplicate copies
+/// were present). Used when `DB_REQUIRE_SSL=true` to make the "always encrypt
+/// and verify" requirement effective regardless of what the connection string
+/// itself says. See #85.
+pub fn force_sslmode_verify_full(url: &str) -> Result<String, String> {
+    let mut parsed =
+        Url::parse(url).map_err(|e| format!("DATABASE_URL is not a valid URL: {e}"))?;
+
+    let remaining: Vec<(String, String)> = parsed
+        .query_pairs()
+        .filter(|(key, _)| key != "sslmode" && key != "ssl-mode")
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect();
+
+    parsed
+        .query_pairs_mut()
+        .clear()
+        .extend_pairs(remaining.into_iter().chain(std::iter::once((
+            "sslmode".to_string(),
+            "verify-full".to_string(),
+        ))));
+
+    Ok(parsed.to_string())
+}
+
+/// Parses a boolean env var that gates a *security-relevant* setting
+/// (`DB_REQUIRE_SSL`): unlike a cosmetic flag, silently treating an unrecognized
+/// value as `false` here would mean a typo (`DB_REQUIRE_SSL=ture`) silently
+/// disables TLS enforcement instead of failing loudly. Accepts `1`/`true`/`yes`
+/// and `0`/`false`/`no` (case-insensitive, trimmed); an unset var is `false`
+/// (the documented default); any other non-empty value is a startup error.
+/// `pub` (rather than module-private) so it can be unit tested directly without
+/// going through `Settings::from_env`'s real-environment-variable reads. See
+/// #142 review (CodeRabbit).
+pub fn parse_required_ssl_flag(raw: Option<String>) -> Result<bool, String> {
+    match raw {
+        None => Ok(false),
+        Some(value) => match value.trim().to_lowercase().as_str() {
+            "" => Ok(false),
+            "1" | "true" | "yes" => Ok(true),
+            "0" | "false" | "no" => Ok(false),
+            other => Err(format!(
+                "DB_REQUIRE_SSL must be one of true/false/1/0/yes/no, got {other:?}"
+            )),
+        },
+    }
+}
+
+/// Parses a cosmetic/non-security-relevant boolean env var (`ENABLE_SWAGGER`):
+/// unrecognized or unset values fall back to `false` rather than erroring, since
+/// the failure mode of getting this wrong is "Swagger UI stays off", not a
+/// security regression -- unlike `DB_REQUIRE_SSL` (see `parse_required_ssl_flag`,
+/// which is intentionally stricter for exactly that reason). Accepts
+/// `1`/`true`/`yes` (case-insensitive, trimmed) as `true`; everything else,
+/// including unset, is `false`.
+fn parse_bool_env(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| matches!(v.trim().to_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false)
+}
+
 impl Settings {
+    /// Builds `Settings` from process environment variables, applying defaults
+    /// for everything optional (see each field's own doc comment for its
+    /// default and env var name).
+    ///
+    /// Returns `Err` for: a missing required var (`DATABASE_URL`), a value that
+    /// fails to parse as its target type (e.g. a non-numeric `SERVER_PORT`), an
+    /// invalid `DB_REQUIRE_SSL` value (see `parse_required_ssl_flag`), or a
+    /// `DATABASE_URL` that fails the plaintext-over-the-network guard (see
+    /// `validate_database_ssl`). A non-fatal SSL configuration issue (see
+    /// `database_ssl_warning`) is logged via `tracing::warn!` rather than
+    /// returned as an error.
     pub fn from_env() -> Result<Self, String> {
+        let db_require_ssl = parse_required_ssl_flag(std::env::var("DB_REQUIRE_SSL").ok())?;
+        let enable_swagger = parse_bool_env("ENABLE_SWAGGER");
+
+        let database_url = {
+            let raw = std::env::var("DATABASE_URL")
+                .map_err(|_| "DATABASE_URL must be set".to_string())?;
+            if db_require_ssl {
+                force_sslmode_verify_full(&raw)?
+            } else {
+                raw
+            }
+        };
+
+        validate_database_ssl(&database_url)?;
+        if let Some(warning) = database_ssl_warning(&database_url) {
+            // init_logging() runs before Settings::from_env() in main.rs, and
+            // every other startup diagnostic goes through tracing -- route this
+            // one the same way so it isn't the one line that bypasses structured
+            // logging, log levels, and any log-based alerting built on it.
+            tracing::warn!("{warning}");
+        }
+
         Ok(Self {
-            database_url: std::env::var("DATABASE_URL")
-                .map_err(|_| "DATABASE_URL must be set".to_string())?,
+            database_url,
+            db_require_ssl,
             server_host: std::env::var("SERVER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
             server_port: std::env::var("SERVER_PORT")
                 .unwrap_or_else(|_| "3000".to_string())
@@ -139,6 +353,13 @@ impl Settings {
                 .filter(|s| !s.is_empty())
                 .filter_map(|s| s.parse::<IpAddr>().ok())
                 .collect(),
+            enable_swagger,
+            revocation_flush_interval_seconds: std::env::var("REVOCATION_FLUSH_INTERVAL_SECONDS")
+                .unwrap_or_else(|_| "5".to_string())
+                .parse()
+                .map_err(|_| {
+                    "REVOCATION_FLUSH_INTERVAL_SECONDS must be a valid number".to_string()
+                })?,
         })
     }
 }

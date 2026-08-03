@@ -21,11 +21,17 @@
 
 use std::net::TcpListener;
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use app_home_services::infrastructure::rate_limiter::redis::RedisRateLimiter;
 
 const TEST_PASSWORD: &str = "test-password-for-apphome-redis-auth-check";
+
+/// Container names must be unique per invocation: the three tests in this file run
+/// in parallel in one process, so `std::process::id()` alone would collide and make
+/// every `podman run` after the first fail with "name already in use".
+static NEXT_CONTAINER_ID: AtomicU32 = AtomicU32::new(0);
 
 fn find_free_port() -> u16 {
     TcpListener::bind(("127.0.0.1", 0))
@@ -45,7 +51,11 @@ struct AuthedRedisTestContainer {
 
 impl AuthedRedisTestContainer {
     fn start() -> Self {
-        let name = format!("apphome-redis-auth-test-{}", std::process::id());
+        let name = format!(
+            "apphome-redis-auth-test-{}-{}",
+            std::process::id(),
+            NEXT_CONTAINER_ID.fetch_add(1, Ordering::Relaxed)
+        );
         let port = find_free_port();
 
         let _ = Command::new("podman").args(["rm", "-f", &name]).output();
@@ -77,11 +87,13 @@ impl AuthedRedisTestContainer {
     }
 
     fn url_with_password(&self, password: &str) -> String {
-        format!("redis://:{password}@127.0.0.1:{}", self.port)
+        // `localhost`, not `127.0.0.1`: podman's port forwarding on Windows/WSL
+        // relays to the IPv6 loopback (::1), and `127.0.0.1` is unreachable there.
+        format!("redis://:{password}@localhost:{}", self.port)
     }
 
     fn url_without_password(&self) -> String {
-        format!("redis://127.0.0.1:{}", self.port)
+        format!("redis://localhost:{}", self.port)
     }
 
     /// Polls with a real, correctly-authenticated connection attempt until the

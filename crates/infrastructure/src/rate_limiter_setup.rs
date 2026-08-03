@@ -117,7 +117,10 @@ mod tests {
             db_acquire_timeout_seconds: 30,
             db_idle_timeout_seconds: 600,
             db_max_lifetime_seconds: 1800,
+            db_require_ssl: false,
             metrics_allowed_ips: vec![],
+            enable_swagger: false,
+            revocation_flush_interval_seconds: 5,
         }
     }
 
