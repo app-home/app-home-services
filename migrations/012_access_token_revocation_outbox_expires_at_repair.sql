@@ -35,6 +35,13 @@ DO $migration$
 DECLARE
     r record;
 BEGIN
+    -- Fail promptly instead of hanging a startup if a concurrent transaction is
+    -- holding the table locks DROP INDEX / REINDEX need: this migration is the
+    -- retry unit, so a lock-contention failure just leaves it "not applied" for
+    -- the next retry. `is_local = true` scopes the value to the migration's own
+    -- implicit transaction, so it never leaks into the rest of the session.
+    PERFORM set_config('lock_timeout', '5s', true);
+
     FOR r IN
         SELECT n.nspname, c.relname
         FROM pg_class c
