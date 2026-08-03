@@ -1,6 +1,7 @@
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use async_trait::async_trait;
 use redis::AsyncCommands;
@@ -37,6 +38,16 @@ else
 end
 "#;
 
+/// Upper bound for a single Redis round-trip. `redis` 1.x's `ConnectionManagerConfig`
+/// defaults `response_timeout`/`connection_timeout` to `None` -- i.e. unbounded -- so
+/// without this, a Redis that is slow or partitioned (as opposed to one that cleanly
+/// returns a connection error) would simply hang every `await` below indefinitely.
+/// That's strictly worse than the fail-open behavior this type replaced: the shadow
+/// fallback (see the struct docs) only ever engages once a call resolves to `Err`, so
+/// an unbounded hang would mean neither Redis nor the shadow enforce anything for as
+/// long as the hang lasts. See #89 review (CodeRabbit).
+const REDIS_TIMEOUT: Duration = Duration::from_millis(250);
+
 /// Redis-backed implementation of the `RateLimiter` port.
 ///
 /// Unlike `MemoryRateLimiter`, counters here live in Redis and are shared by every
@@ -48,17 +59,17 @@ end
 /// counter -- a burst of refresh attempts from an IP must not eat into that same IP's
 /// login attempt budget, and vice versa.
 ///
-/// On Redis errors (e.g. connection dropped), this implementation does not stall the
-/// request and does not silently drop rate limiting: every operation is replayed
-/// against an internal in-memory `MemoryRateLimiter` *shadow*, so a per-IP budget is
-/// still enforced on this instance while Redis is unreachable (see #89). The shadow
-/// only covers a single instance (each replica enforces its own budget during an
-/// outage) and its memory is bounded (see `MemoryRateLimiter`'s `MAX_ENTRIES` and
-/// `clean_expired`). Each failure is logged at `error` level so the outage is visible
-/// in logs, and also counted in `redis_error_count` (see its docs) so it can
-/// additionally be surfaced as a metric. `ConnectionManager` also reconnects
-/// automatically in the background; once Redis is reachable again, operations go back
-/// to Redis and the shadow is ignored.
+/// On Redis errors or timeouts (see `REDIS_TIMEOUT`), this implementation does not
+/// stall the request and does not silently drop rate limiting: every operation is
+/// replayed against an internal in-memory `MemoryRateLimiter` *shadow*, so a per-IP
+/// budget is still enforced on this instance while Redis is unreachable (see #89).
+/// The shadow only covers a single instance (each replica enforces its own budget
+/// during an outage) and its memory is bounded (see `MemoryRateLimiter`'s
+/// `MAX_ENTRIES` and `clean_expired`). Each failure is logged at `error` level so the
+/// outage is visible in logs, and also counted in `redis_error_count` (see its docs)
+/// so it can additionally be surfaced as a metric. `ConnectionManager` also
+/// reconnects automatically in the background; once Redis is reachable again,
+/// operations go back to Redis and the shadow is ignored.
 #[derive(Clone)]
 pub struct RedisRateLimiter {
     conn: ConnectionManager,
@@ -112,17 +123,27 @@ impl RedisRateLimiter {
 impl RateLimiter for RedisRateLimiter {
     async fn check(&self, ip: IpAddr) -> bool {
         let mut conn = self.conn.clone();
-        let result: redis::RedisResult<Option<u32>> = conn.get(self.key(ip)).await;
+        let outcome =
+            tokio::time::timeout(REDIS_TIMEOUT, conn.get::<_, Option<u32>>(self.key(ip))).await;
 
-        match result {
-            Ok(Some(count)) => count < self.max_attempts,
-            Ok(None) => true,
-            Err(e) => {
+        match outcome {
+            Ok(Ok(Some(count))) => count < self.max_attempts,
+            Ok(Ok(None)) => true,
+            Ok(Err(e)) => {
                 self.record_redis_error();
                 tracing::error!(
                     error = %e,
                     scope = %self.key_prefix,
                     "Redis rate limiter: check failed, enforcing the in-memory shadow budget"
+                );
+                self.shadow.check(ip).await
+            }
+            Err(_elapsed) => {
+                self.record_redis_error();
+                tracing::error!(
+                    scope = %self.key_prefix,
+                    timeout_ms = REDIS_TIMEOUT.as_millis(),
+                    "Redis rate limiter: check timed out, enforcing the in-memory shadow budget"
                 );
                 self.shadow.check(ip).await
             }
@@ -132,36 +153,54 @@ impl RateLimiter for RedisRateLimiter {
     async fn record_attempt(&self, ip: IpAddr) {
         let mut conn = self.conn.clone();
         let script = redis::Script::new(INCR_WITH_EXPIRE_SCRIPT);
-        let result: redis::RedisResult<i64> = script
-            .key(self.key(ip))
-            .arg(self.window_seconds)
-            .invoke_async(&mut conn)
-            .await;
+        let outcome = tokio::time::timeout(
+            REDIS_TIMEOUT,
+            script
+                .key(self.key(ip))
+                .arg(self.window_seconds)
+                .invoke_async::<i64>(&mut conn),
+        )
+        .await;
 
-        if let Err(e) = result {
-            self.record_redis_error();
-            tracing::error!(
-                error = %e,
-                scope = %self.key_prefix,
-                "Redis rate limiter: failed to record attempt, recording in the in-memory shadow"
-            );
-            self.shadow.record_attempt(ip).await;
+        match outcome {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                self.record_redis_error();
+                tracing::error!(
+                    error = %e,
+                    scope = %self.key_prefix,
+                    "Redis rate limiter: failed to record attempt, recording in the in-memory shadow"
+                );
+                self.shadow.record_attempt(ip).await;
+            }
+            Err(_elapsed) => {
+                self.record_redis_error();
+                tracing::error!(
+                    scope = %self.key_prefix,
+                    timeout_ms = REDIS_TIMEOUT.as_millis(),
+                    "Redis rate limiter: record_attempt timed out, recording in the in-memory shadow"
+                );
+                self.shadow.record_attempt(ip).await;
+            }
         }
     }
 
     async fn try_check_and_record(&self, ip: IpAddr) -> bool {
         let mut conn = self.conn.clone();
         let script = redis::Script::new(TRY_CHECK_AND_RECORD_SCRIPT);
-        let result: redis::RedisResult<i64> = script
-            .key(self.key(ip))
-            .arg(self.window_seconds)
-            .arg(self.max_attempts)
-            .invoke_async(&mut conn)
-            .await;
+        let outcome = tokio::time::timeout(
+            REDIS_TIMEOUT,
+            script
+                .key(self.key(ip))
+                .arg(self.window_seconds)
+                .arg(self.max_attempts)
+                .invoke_async::<i64>(&mut conn),
+        )
+        .await;
 
-        match result {
-            Ok(allowed) => allowed != 0,
-            Err(e) => {
+        match outcome {
+            Ok(Ok(allowed)) => allowed != 0,
+            Ok(Err(e)) => {
                 self.record_redis_error();
                 tracing::error!(
                     error = %e,
@@ -170,17 +209,27 @@ impl RateLimiter for RedisRateLimiter {
                 );
                 self.shadow.try_check_and_record(ip).await
             }
+            Err(_elapsed) => {
+                self.record_redis_error();
+                tracing::error!(
+                    scope = %self.key_prefix,
+                    timeout_ms = REDIS_TIMEOUT.as_millis(),
+                    "Redis rate limiter: try_check_and_record timed out, enforcing the in-memory shadow budget"
+                );
+                self.shadow.try_check_and_record(ip).await
+            }
         }
     }
 
     async fn remaining_attempts(&self, ip: IpAddr) -> u32 {
         let mut conn = self.conn.clone();
-        let result: redis::RedisResult<Option<u32>> = conn.get(self.key(ip)).await;
+        let outcome =
+            tokio::time::timeout(REDIS_TIMEOUT, conn.get::<_, Option<u32>>(self.key(ip))).await;
 
-        match result {
-            Ok(Some(count)) => self.max_attempts.saturating_sub(count),
-            Ok(None) => self.max_attempts,
-            Err(e) => {
+        match outcome {
+            Ok(Ok(Some(count))) => self.max_attempts.saturating_sub(count),
+            Ok(Ok(None)) => self.max_attempts,
+            Ok(Err(e)) => {
                 self.record_redis_error();
                 tracing::error!(
                     error = %e,
@@ -189,23 +238,63 @@ impl RateLimiter for RedisRateLimiter {
                 );
                 self.shadow.remaining_attempts(ip).await
             }
+            Err(_elapsed) => {
+                self.record_redis_error();
+                tracing::error!(
+                    scope = %self.key_prefix,
+                    timeout_ms = REDIS_TIMEOUT.as_millis(),
+                    "Redis rate limiter: remaining_attempts timed out, reading the in-memory shadow"
+                );
+                self.shadow.remaining_attempts(ip).await
+            }
         }
     }
 
     async fn reset(&self, ip: IpAddr) {
-        // Clear the shadow entry regardless of the Redis outcome, so a stale shadow
-        // count from a previous outage can't carry over into the next one.
-        self.shadow.reset(ip).await;
         let mut conn = self.conn.clone();
-        let result: redis::RedisResult<i64> = conn.del(self.key(ip)).await;
+        let outcome = tokio::time::timeout(REDIS_TIMEOUT, conn.del::<_, i64>(self.key(ip))).await;
 
-        if let Err(e) = result {
-            self.record_redis_error();
-            tracing::error!(
-                error = %e,
-                scope = %self.key_prefix,
-                "Redis rate limiter: failed to reset counter"
-            );
+        // The shadow is cleared unconditionally, regardless of the Redis outcome
+        // below: it's what THIS instance enforces right now, and a reset (e.g.
+        // after a successful login) should take effect on this instance
+        // immediately even if Redis is unreachable.
+        //
+        // Attempted the Redis DEL first (not after, as an earlier version of this
+        // did) so a successful DEL and the shadow clear both reflect the same
+        // underlying fact -- the reset actually landed everywhere -- rather than
+        // clearing local state first and then finding out Redis was never told.
+        //
+        // If DEL fails or times out, the counter in Redis is NOT cleared: once
+        // Redis recovers, a request on *another* instance (or this one, after the
+        // shadow's own TTL for this jti elapses) reads that stale, un-reset
+        // count. This is bounded, not permanent -- the key already carries a TTL
+        // of `window_seconds` from `INCR_WITH_EXPIRE_SCRIPT`, so the stale count
+        // self-expires within one window at worst. Retrying the DEL durably
+        // (mirroring the outbox pattern `DurableRevocationBlacklist` uses for
+        // access-token revocation, see #140) would close that window entirely,
+        // but is more machinery than a bounded, self-healing reset gap justifies
+        // here -- revisit if `window_seconds` is ever configured large enough
+        // that the gap becomes operationally meaningful.
+        match outcome {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => {
+                self.record_redis_error();
+                tracing::error!(
+                    error = %e,
+                    scope = %self.key_prefix,
+                    "Redis rate limiter: failed to reset counter (shadow was still cleared; the stale Redis counter self-expires within one window)"
+                );
+            }
+            Err(_elapsed) => {
+                self.record_redis_error();
+                tracing::error!(
+                    scope = %self.key_prefix,
+                    timeout_ms = REDIS_TIMEOUT.as_millis(),
+                    "Redis rate limiter: reset timed out (shadow was still cleared; the stale Redis counter self-expires within one window)"
+                );
+            }
         }
+
+        self.shadow.reset(ip).await;
     }
 }
