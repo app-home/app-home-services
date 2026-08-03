@@ -4,12 +4,17 @@
 
 ### Redis rate limiter
 
-During a Redis outage, `RedisRateLimiter` does not block requests and does not drop
-rate limiting: every operation is replayed against an in-memory `MemoryRateLimiter`
-shadow with the same per-IP budget, so each instance keeps enforcing its own budget
-(see #89). Cross-instance coordination is lost while Redis is down, and every Redis
-error is counted in-process (see `RedisRateLimiter::redis_error_count` /
-`error_counter_handle`) and, as of #36, published as a Prometheus metric:
+After startup, if a previously-healthy `RedisRateLimiter` loses Redis, it does not
+block requests and does not drop rate limiting entirely: every operation is
+replayed against an in-memory `MemoryRateLimiter` shadow with the same per-IP
+budget, so each instance keeps enforcing its own budget (see #89). Requests can
+still be rejected once that shadow budget is exhausted -- this is a fallback to
+per-instance enforcement, not a bypass. (A `REDIS_URL` that is configured but
+unreachable *at startup* is a separate, fatal case: `build_rate_limiters` aborts
+rather than ever reaching this fallback.) Cross-instance coordination is lost
+while Redis is down, and every Redis error is counted in-process (see
+`RedisRateLimiter::redis_error_count` / `error_counter_handle`) and, as of #36,
+published as a Prometheus metric:
 
 ```text
 rate_limiter_redis_errors_total{scope="login"}
@@ -22,11 +27,13 @@ and re-published every 15 seconds from the in-process atomic counter maintained 
 
 ### Redis access token blacklist
 
-`RedisAccessTokenBlacklist` (see #88) also fails open on any Redis error: the
+`RedisAccessTokenBlacklist` (see #88) fails open on any Redis error: the
 `AuthenticatedUser` extractor treats an unavailable revocation list as "not
-revoked", so revoked access tokens keep validating until the outage clears -- an
-availability-over-strictness choice made deliberately (the same posture as the rate
-limiter). Each occurrence is counted in-process (see
+revoked", so revoked access tokens keep validating until the outage clears. Unlike
+the rate limiter (see above), there is no in-memory shadow here -- a revoked-token
+check has no safe "assume revoked" fallback the way a rate-limit budget does, so
+this is a deliberate availability-over-strictness choice, not a smaller version of
+the same mechanism. Each occurrence is counted in-process (see
 `RedisAccessTokenBlacklist::redis_error_count` / `error_counter_handle`) and
 published by `main.rs` as:
 
