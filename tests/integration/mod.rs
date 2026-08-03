@@ -78,6 +78,7 @@ mod login_google_test;
 mod login_password_test;
 mod logout_test;
 mod metrics_test;
+mod migration_recovery_test;
 mod rate_limit_test;
 mod redis_access_token_blacklist_test;
 mod redis_auth_test;
