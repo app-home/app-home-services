@@ -2,9 +2,10 @@
 name = "profiles"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [dependencies]
-shared = { path = "../shared" }
+shared = { path = "../shared", version = "0.1" }
 uuid = { version = "1", features = ["v7", "serde"] }
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }

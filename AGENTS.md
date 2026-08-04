@@ -1,7 +1,8 @@
 <!-- SPECKIT START -->
-The current implementation plan is at `specs/003-openapi-docs/plan.md`.
+The current implementation plan is at `specs/009-cargo-audit/plan.md`.
 Read it for context about technologies, project structure, and the
-implementation approach for the OpenAPI & Swagger documentation feature.
+implementation approach for the dependency security (cargo-audit + cargo-deny)
+feature.
 <!-- SPECKIT END -->
 
 ## Project State (auto-updated by opencode)

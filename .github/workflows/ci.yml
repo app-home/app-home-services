@@ -60,3 +60,53 @@ jobs:
       # lockfile-focused workflow.
       - name: cargo test (unit)
         run: cargo test --locked --lib
+
+  security-audit:
+    name: Security audit (cargo-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # cargo-audit (issue #91) fetches the RustSec advisory database and fails when
+      # a CVE affects any crate in Cargo.lock. It is intentionally NOT part of the
+      # required checks on the main ruleset -- informational, but every PR run
+      # surfaces findings via a red job.
+      - name: cargo audit
+        run: cargo install cargo-audit --locked && cargo audit
+
+  security-deny:
+    name: License + duplicate checks (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      # cargo-deny (issue #91) enforces the SPDX allow-list and duplicate/wildcard
+      # bans from deny.toml. Advisories are deliberately excluded: cargo-audit
+      # already owns the RustSec database, so checking them here would fetch it
+      # twice per run. Informational (not required by the main ruleset).
+      - name: cargo deny
+        run: cargo install cargo-deny --locked && cargo deny check licenses bans

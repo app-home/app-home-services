@@ -2,9 +2,10 @@
 name = "infrastructure"
 version = "0.1.0"
 edition = "2024"
+publish = false
 
 [dependencies]
-shared = { path = "../shared" }
+shared = { path = "../shared", version = "0.1" }
 sqlx = { version = "0.9", features = ["postgres", "uuid", "runtime-tokio", "tls-rustls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
