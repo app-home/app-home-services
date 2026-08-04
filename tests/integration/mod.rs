@@ -87,4 +87,5 @@ mod redis_rate_limit_test;
 mod redis_startup_test;
 mod refresh_rate_limit_test;
 mod refresh_test;
+mod security_headers_test;
 mod startup_test;
