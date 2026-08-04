@@ -7,13 +7,14 @@ name = "app-home-services"
 version = "0.1.0"
 edition = "2024"
 description = "App Home Services - User Authentication"
+publish = false
 
 [dependencies]
-auth = { path = "crates/auth" }
-shared = { path = "crates/shared" }
-infrastructure = { path = "crates/infrastructure" }
-profiles = { path = "crates/profiles" }
-admin = { path = "crates/admin" }
+auth = { path = "crates/auth", version = "0.1" }
+shared = { path = "crates/shared", version = "0.1" }
+infrastructure = { path = "crates/infrastructure", version = "0.1" }
+profiles = { path = "crates/profiles", version = "0.1" }
+admin = { path = "crates/admin", version = "0.1" }
 
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
