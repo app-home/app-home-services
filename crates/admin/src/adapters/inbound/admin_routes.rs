@@ -184,12 +184,19 @@ pub async fn update_user_role_handler(
         }
     }
 
-    match update_user_role::update_user_role(&*repo, user_id, &req.role).await {
+    match update_user_role::update_user_role(&*repo, auth_user.user_id, user_id, &req.role).await {
         Ok(user) => (StatusCode::OK, Json(user_to_response(user))).into_response(),
         Err(AdminError::NotFound(_)) => (
             StatusCode::NOT_FOUND,
             Json(ErrorResponse {
                 error: "User not found".into(),
+            }),
+        )
+            .into_response(),
+        Err(AdminError::CannotChangeOwnRole) => (
+            StatusCode::FORBIDDEN,
+            Json(ErrorResponse {
+                error: "Cannot change your own role".into(),
             }),
         )
             .into_response(),

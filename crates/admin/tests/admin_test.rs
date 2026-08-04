@@ -284,11 +284,13 @@ fn user_response_null_username() {
 #[tokio::test]
 async fn update_user_role_promotes_to_admin() {
     let repo = MockAdminRepo::new();
+    let actor_id = Uuid::now_v7();
     let id = Uuid::now_v7();
     let user = make_admin_user(id, Some("alice"), Role::User);
+    repo.seed(make_admin_user(actor_id, Some("root"), Role::Admin));
     repo.seed(user);
 
-    let result = update_user_role::update_user_role(&repo, id, "admin")
+    let result = update_user_role::update_user_role(&repo, actor_id, id, "admin")
         .await
         .unwrap();
     assert!(result.is_admin());
@@ -298,11 +300,13 @@ async fn update_user_role_promotes_to_admin() {
 #[tokio::test]
 async fn update_user_role_demotes_to_user() {
     let repo = MockAdminRepo::new();
+    let actor_id = Uuid::now_v7();
     let id = Uuid::now_v7();
     let user = make_admin_user(id, Some("bob"), Role::Admin);
+    repo.seed(make_admin_user(actor_id, Some("root"), Role::Admin));
     repo.seed(user);
 
-    let result = update_user_role::update_user_role(&repo, id, "user")
+    let result = update_user_role::update_user_role(&repo, actor_id, id, "user")
         .await
         .unwrap();
     assert!(!result.is_admin());
@@ -312,9 +316,10 @@ async fn update_user_role_demotes_to_user() {
 #[tokio::test]
 async fn update_user_role_not_found() {
     let repo = MockAdminRepo::new();
+    let actor_id = Uuid::now_v7();
     let missing_id = Uuid::now_v7();
 
-    let err = update_user_role::update_user_role(&repo, missing_id, "admin")
+    let err = update_user_role::update_user_role(&repo, actor_id, missing_id, "admin")
         .await
         .unwrap_err();
     assert!(matches!(err, AdminError::NotFound(id) if id == missing_id));
@@ -323,15 +328,41 @@ async fn update_user_role_not_found() {
 #[tokio::test]
 async fn update_user_role_rejects_invalid_role() {
     let repo = MockAdminRepo::new();
+    let actor_id = Uuid::now_v7();
     let id = Uuid::now_v7();
     let user = make_admin_user(id, Some("alice"), Role::User);
+    repo.seed(make_admin_user(actor_id, Some("root"), Role::Admin));
     repo.seed(user);
 
-    let err = update_user_role::update_user_role(&repo, id, "superadmin")
+    let err = update_user_role::update_user_role(&repo, actor_id, id, "superadmin")
         .await
         .unwrap_err();
     assert!(matches!(err, AdminError::InvalidValue(_)));
     assert!(err.to_string().contains("role"));
+}
+
+#[tokio::test]
+async fn update_user_role_rejects_self_demotion() {
+    let repo = MockAdminRepo::new();
+    let id = Uuid::now_v7();
+    repo.seed(make_admin_user(id, Some("root"), Role::Admin));
+
+    let err = update_user_role::update_user_role(&repo, id, id, "user")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AdminError::CannotChangeOwnRole));
+}
+
+#[tokio::test]
+async fn update_user_role_rejects_self_promotion() {
+    let repo = MockAdminRepo::new();
+    let id = Uuid::now_v7();
+    repo.seed(make_admin_user(id, Some("root"), Role::User));
+
+    let err = update_user_role::update_user_role(&repo, id, id, "admin")
+        .await
+        .unwrap_err();
+    assert!(matches!(err, AdminError::CannotChangeOwnRole));
 }
 
 // ---------------------------------------------------------------------------
