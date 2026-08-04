@@ -41,11 +41,13 @@ end
 /// Upper bound for a single Redis round-trip. `redis` 1.x's `ConnectionManagerConfig`
 /// defaults `response_timeout`/`connection_timeout` to `None` -- i.e. unbounded -- so
 /// without this, a Redis that is slow or partitioned (as opposed to one that cleanly
-/// returns a connection error) would simply hang every `await` below indefinitely.
-/// That's strictly worse than the fail-open behavior this type replaced: the shadow
-/// fallback (see the struct docs) only ever engages once a call resolves to `Err`, so
-/// an unbounded hang would mean neither Redis nor the shadow enforce anything for as
-/// long as the hang lasts. See #89 review (CodeRabbit).
+/// returns a connection error) would simply hang every `await` in this module
+/// indefinitely. That's strictly worse than the fail-open behavior this type
+/// replaced: the shadow fallback (see the struct docs) only ever engages once a call
+/// resolves to `Err`, so an unbounded hang would mean neither Redis nor the shadow
+/// enforce anything for as long as the hang lasts. Every Redis operation is bounded
+/// by this timeout, including the startup handshake in `connect` (connection-manager
+/// setup and the initial PING). See #89 review (CodeRabbit).
 const REDIS_TIMEOUT: Duration = Duration::from_millis(250);
 
 /// Redis-backed implementation of the `RateLimiter` port.
@@ -88,10 +90,22 @@ impl RedisRateLimiter {
         key_prefix: impl Into<String>,
     ) -> redis::RedisResult<Self> {
         let client = redis::Client::open(redis_url)?;
-        let conn = client.get_connection_manager().await?;
-        redis::cmd("PING")
-            .query_async::<()>(&mut conn.clone())
-            .await?;
+        let conn = tokio::time::timeout(REDIS_TIMEOUT, client.get_connection_manager())
+            .await
+            .map_err(|_elapsed| {
+                redis::RedisError::from((
+                    redis::ErrorKind::Io,
+                    "Redis connection manager setup timed out",
+                ))
+            })??;
+        tokio::time::timeout(
+            REDIS_TIMEOUT,
+            redis::cmd("PING").query_async::<()>(&mut conn.clone()),
+        )
+        .await
+        .map_err(|_elapsed| {
+            redis::RedisError::from((redis::ErrorKind::Io, "Redis startup PING timed out"))
+        })??;
         Ok(Self {
             conn,
             max_attempts,
