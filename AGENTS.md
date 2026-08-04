@@ -1,8 +1,8 @@
 <!-- SPECKIT START -->
-The current implementation plan is at `specs/010-security-headers/plan.md`.
+The current implementation plan is at `specs/011-admin-self-demotion/plan.md`.
 Read it for context about technologies, project structure, and the
-implementation approach for the HTTP security headers (HSTS, X-Content-Type-Options,
-X-Frame-Options, Referrer-Policy) feature.
+implementation approach for preventing an admin from changing their own role
+(issue #92).
 <!-- SPECKIT END -->
 
 ## Project State (auto-updated by opencode)
