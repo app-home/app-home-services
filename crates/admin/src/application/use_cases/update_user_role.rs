@@ -7,9 +7,14 @@ use crate::domain::value_objects::role::Role;
 
 pub async fn update_user_role(
     repo: &dyn AdminRepository,
+    actor_id: Uuid,
     user_id: Uuid,
     new_role: &str,
 ) -> Result<AdminUser, AdminError> {
+    if actor_id == user_id {
+        return Err(AdminError::CannotChangeOwnRole);
+    }
+
     let role = Role::try_from(new_role)
         .map_err(|_| AdminError::InvalidValue("role must be 'user' or 'admin'".into()))?;
 

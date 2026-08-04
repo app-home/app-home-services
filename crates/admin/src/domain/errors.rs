@@ -6,6 +6,8 @@ pub enum AdminError {
     NotFound(uuid::Uuid),
     #[error("Not authorized")]
     Unauthorized,
+    #[error("Cannot change your own role")]
+    CannotChangeOwnRole,
     #[error("Invalid value: {0}")]
     InvalidValue(String),
     #[error("Internal error: {0}")]

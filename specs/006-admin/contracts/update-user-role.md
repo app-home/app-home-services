@@ -58,6 +58,16 @@
 }
 ```
 
+## Response 403 (Self Role Change)
+
+Returned when an admin tries to change their own role:
+
+```json
+{
+    "error": "Cannot change your own role"
+}
+```
+
 ## Response 404 (Not Found)
 
 ```json
@@ -69,5 +79,6 @@
 ## Notes
 
 - Requires JWT authentication with admin role
+- An admin cannot change their own role (returns 403) — see #92
 - Accepts `"user"` or `"admin"` as valid role values
 - Returns the updated user with new role
