@@ -1,7 +1,7 @@
 groups:
   - name: app-home-services-rate-limiter
     rules:
-      - alert: RedisRateLimiterFailingOpen
+      - alert: RedisRateLimiterDegraded
         # Starting threshold is deliberately low/sensitive (> 0 errors in a 5-minute
         # window) so it fires on essentially any Redis error while we're still
         # gathering a baseline of what "normal" transient noise looks like in this
@@ -11,11 +11,13 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Redis rate limiter is failing open ({{ $labels.scope }})"
+          summary: "Redis rate limiter is degraded ({{ $labels.scope }})"
           description: >-
             The {{ $labels.scope }} rate limiter has recorded
-            {{ $value }} Redis error(s) in the last 5 minutes and is failing
-            open (allowing all requests through) for each one. See
+            {{ $value }} Redis error(s) in the last 5 minutes. While Redis is
+            down it falls back to an in-memory per-instance budget (see #89),
+            so brute-force protection is weakened but not dropped:
+            cross-instance coordination is lost until Redis recovers. See
             docs/alerting.md for context and for how to raise this
             threshold if it's firing too often on transient blips.
   - name: app-home-services-access-token-blacklist

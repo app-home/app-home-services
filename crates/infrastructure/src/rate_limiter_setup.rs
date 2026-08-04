@@ -8,13 +8,13 @@ use crate::rate_limiter::redis::RedisRateLimiter;
 
 use crate::config::Settings;
 
-/// Shareable handles to each rate limiter's Redis fail-open error counter, for
-/// polling into a metrics exporter (see `infrastructure::telemetry::metrics` and the
-/// `/metrics` route wired up in `main`).
+/// Shareable handles to each rate limiter's Redis error counter, for polling into a
+/// metrics exporter (see `infrastructure::telemetry::metrics` and the `/metrics`
+/// route wired up in `main`).
 ///
 /// Both fields are `None` when running on the in-memory backend (`REDIS_URL` unset),
-/// since `MemoryRateLimiter` has no equivalent counter -- it can't fail open the way
-/// a network-backed limiter can, so there's nothing to observe here for that backend.
+/// since `MemoryRateLimiter` has no equivalent counter -- it has no network backend
+/// to degrade, so there's nothing to observe here for that backend.
 #[derive(Clone, Default)]
 pub struct RateLimiterErrorCounters {
     pub login: Option<Arc<AtomicU64>>,
@@ -126,13 +126,14 @@ mod tests {
 
     /// When REDIS_URL is unset, this must fall back to MemoryRateLimiter without ever
     /// attempting a network connection, and report no error counters (nothing to
-    /// poll for a backend that can't fail open this way). There's no way to downcast
+    /// poll for a backend that can't degrade this way). There's no way to downcast
     /// the returned `Arc<dyn RateLimiter>` back to a concrete type to assert on it
     /// directly (the port intentionally doesn't require `Any`), so this asserts on
-    /// the behavior that distinguishes the two paths instead: this call succeeds
-    /// immediately with no Redis reachable in the test environment. If the `None`
-    /// branch ever regressed into attempting a Redis connection, this test would
-    /// fail (or hang) rather than silently passing.
+    /// the behavior that distinguishes the two paths instead: the error-counter
+    /// handles are `None` for the memory backend. This only observes the absence of
+    /// the Redis error counters -- it cannot directly observe whether a network
+    /// attempt was made, so a regression that tried Redis and then fell back to
+    /// memory would not be caught by this test alone.
     #[tokio::test]
     async fn falls_back_to_memory_backend_when_redis_url_is_unset() {
         let settings = settings_with_redis_url(None);

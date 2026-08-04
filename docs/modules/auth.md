@@ -91,7 +91,7 @@ Aggregate root containing `User + Vec<Session> + pending domain events`.
 | `GoogleAuthProvider` | `AuthProvider` | Google ID token verification |
 | `AuditEventHandler` | — | Consumes `EventBus` events, persists to `user_actions` |
 | `MemoryRateLimiter` | `RateLimiter` | In-memory, single-instance safe |
-| `RedisRateLimiter` | `RateLimiter` | Redis-backed, multi-instance, fail-open |
+| `RedisRateLimiter` | `RateLimiter` | Redis-backed, multi-instance; in-memory per-instance shadow budget during outages (see #89) |
 | `MemoryAccessTokenBlacklist` | `AccessTokenBlacklist` | In-memory, single-instance safe (see Access Token Revocation below) |
 | `RedisAccessTokenBlacklist` | `AccessTokenBlacklist` | Redis-backed, multi-instance, fail-open |
 | `DurableRevocationBlacklist` | `AccessTokenBlacklist` | Wraps the Redis adapter with Postgres-journaled durable retry (see #140) |
