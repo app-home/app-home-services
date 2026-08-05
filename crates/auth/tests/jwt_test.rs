@@ -132,7 +132,7 @@ fn test_valid_token_with_iss_aud_validates() {
 /// Always includes a valid `jti` so decoding never fails for a reason unrelated
 /// to the claim under test (see #87 / CodeRabbit review on PR #142).
 fn encode_access_token_with(secret: &str, iss: &str, aud: &str) -> String {
-    let now = chrono::Utc::now().timestamp() as usize;
+    let now = chrono::Utc::now().timestamp();
     let claims = serde_json::json!({
         "sub": Uuid::now_v7(),
         "jti": Uuid::now_v7(),
@@ -196,7 +196,7 @@ fn test_token_without_iss_aud_is_rejected() {
     // this predates #88 too) so a missing-jti decode failure can't be mistaken
     // for the iss/aud rejection this test is actually checking.
     let secret = "test-secret-key-that-is-long-enough-for-hmac";
-    let now = chrono::Utc::now().timestamp() as usize;
+    let now = chrono::Utc::now().timestamp();
     let claims = serde_json::json!({
         "sub": Uuid::now_v7(),
         "jti": Uuid::now_v7(),

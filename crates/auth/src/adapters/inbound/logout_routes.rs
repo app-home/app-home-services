@@ -60,8 +60,7 @@ pub async fn logout_handler(
             // silently drops -- the revocation. revoke() only surfaces an error
             // when Redis AND Postgres are both down at once, in which case the
             // token stays valid until its natural expiry (logged at error level).
-            let ttl_secs =
-                revocation_ttl_secs(auth_user.exp, chrono::Utc::now().timestamp() as usize);
+            let ttl_secs = revocation_ttl_secs(auth_user.exp, chrono::Utc::now().timestamp());
             match blacklist.revoke(auth_user.jti, ttl_secs).await {
                 Ok(()) => {
                     tracing::info!(
@@ -117,11 +116,21 @@ pub async fn logout_handler(
     }
 }
 
-/// Remaining lifetime of an access token, in whole seconds, used as the
-/// revocation list TTL so the entry lives exactly as long as the token would
-/// have. `now` is taken as a parameter for testability.
-fn revocation_ttl_secs(exp: usize, now: usize) -> u64 {
-    exp.saturating_sub(now) as u64
+/// `jsonwebtoken`'s default `Validation` leeway, applied around `exp` when
+/// validating tokens (see `shared::auth::JwtVerification::validation`). A token
+/// expired less than this many seconds ago is still accepted, so the revocation
+/// entry must outlive it by the same window or the revoked token would keep
+/// validating after logout (CWE-613). Keep in sync with `jsonwebtoken`'s
+/// default.
+const JWT_EXP_LEEWAY_SECS: i64 = 60;
+
+/// Remaining acceptance window of an access token, in whole seconds, used as
+/// the revocation list TTL so the entry lives exactly as long as the token
+/// could still validate (its nominal lifetime plus the JWT `exp` leeway).
+/// `now` is taken as a parameter for testability. Timestamps are `i64`
+/// (see #95).
+fn revocation_ttl_secs(exp: i64, now: i64) -> u64 {
+    (exp + JWT_EXP_LEEWAY_SECS - now).max(0) as u64
 }
 
 #[cfg(test)]
@@ -129,12 +138,18 @@ mod tests {
     use super::revocation_ttl_secs;
 
     #[test]
-    fn ttl_is_remaining_lifetime() {
-        assert_eq!(revocation_ttl_secs(1_800, 1_000), 800);
+    fn ttl_is_remaining_acceptance_window() {
+        assert_eq!(revocation_ttl_secs(1_800, 1_000), 860);
     }
 
     #[test]
-    fn ttl_clamps_at_zero_for_expired_token() {
+    fn ttl_covers_the_exp_leeway_window() {
+        assert_eq!(revocation_ttl_secs(1_000, 1_030), 30);
+    }
+
+    #[test]
+    fn ttl_clamps_at_zero_beyond_the_leeway_window() {
         assert_eq!(revocation_ttl_secs(1_000, 1_800), 0);
+        assert_eq!(revocation_ttl_secs(1_000, 1_060), 0);
     }
 }
