@@ -38,7 +38,7 @@ pub async fn refresh_token(
         chrono::Utc::now() + chrono::Duration::days(settings.refresh_token_expiry_days);
 
     let refresh_hash = HashedPassword::new(
-        bcrypt::hash(&token_pair.refresh_token, bcrypt::DEFAULT_COST)
+        bcrypt::hash(&token_pair.refresh_token, settings.bcrypt_cost)
             .map_err(|_| AuthError::TokenGenerationFailed)?,
     )
     .map_err(|_| AuthError::TokenGenerationFailed)?;

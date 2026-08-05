@@ -56,6 +56,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `JWT_SECRET` | Yes | — | HMAC secret for signing JWT tokens. Must be at least 32 bytes **and** have at least 8 unique characters (rejects both short and low-entropy secrets, e.g. `aaaa...aaaa`) -- generate one with `openssl rand -hex 64` |
 | `ACCESS_TOKEN_EXPIRY_MINUTES` | No | `15` | Access token lifetime in minutes |
 | `REFRESH_TOKEN_EXPIRY_DAYS` | No | `7` | Refresh token lifetime in days |
+| `BCRYPT_COST` | No | `12` | bcrypt cost used for password and refresh-token hashing (OWASP minimum). Must be `>= 12` (OWASP) and `<= 31` (bcrypt's maximum); the service refuses to start otherwise (see #94) |
 | `JWT_ISSUER` | No | `app-home-services` | `iss` claim minted/required on tokens; set a distinct value per environment so tokens can't be replayed across environments (see #87) |
 | `JWT_AUDIENCE` | No | `app-home-services` | `aud` claim minted/required on tokens; same cross-environment replay rationale as `JWT_ISSUER` |
 | `RATE_LIMIT_MAX_ATTEMPTS` | No | `10` | Max failed login attempts per IP within the time window |

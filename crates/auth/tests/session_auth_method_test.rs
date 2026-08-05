@@ -232,6 +232,7 @@ fn test_settings() -> AuthSettings {
         jwt_audience: "app-home-services".to_string(),
         access_token_expiry_minutes: 15,
         refresh_token_expiry_days: 7,
+        bcrypt_cost: TEST_BCRYPT_COST,
     }
 }
 
@@ -348,4 +349,14 @@ async fn refresh_carries_google_oauth_auth_method_forward_after_rotation() {
         .unwrap()
         .expect("rotated session should exist");
     assert_eq!(new_session.auth_method(), &AuthMethod::GoogleOAuth);
+
+    let expected_cost_prefix = format!("$2b${TEST_BCRYPT_COST:02}$");
+    assert!(
+        new_session
+            .refresh_token_hash()
+            .as_ref()
+            .starts_with(&expected_cost_prefix),
+        "the rotated refresh-token hash must be hashed at TEST_BCRYPT_COST, got: {}",
+        new_session.refresh_token_hash().as_ref()
+    );
 }
