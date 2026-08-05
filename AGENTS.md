@@ -1,8 +1,9 @@
 <!-- SPECKIT START -->
-The current implementation plan is at `specs/011-admin-self-demotion/plan.md`.
+The current implementation plan is at `specs/012-native-tls/plan.md`.
 Read it for context about technologies, project structure, and the
-implementation approach for preventing an admin from changing their own role
-(issue #92).
+implementation approach for optional native TLS support (reverse proxy
+documentation + rustls termination via `TLS_CERT_PATH`/`TLS_KEY_PATH`,
+issue #93).
 <!-- SPECKIT END -->
 
 ## Project State (auto-updated by opencode)
