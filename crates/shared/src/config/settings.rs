@@ -8,6 +8,14 @@ pub struct Settings {
     pub database_url: String,
     pub server_host: String,
     pub server_port: u16,
+    /// Path to a PEM-encoded TLS certificate chain. When set together with
+    /// `tls_key_path`, this instance terminates HTTPS natively via rustls
+    /// instead of relying on a reverse proxy (see #93). Empty = plain HTTP
+    /// (TLS termination is expected to be handled by a reverse proxy).
+    pub tls_cert_path: Option<String>,
+    /// Path to the PEM-encoded private key matching `tls_cert_path`. Must be
+    /// set together with `tls_cert_path`; setting only one aborts startup.
+    pub tls_key_path: Option<String>,
     pub rate_limit_max_attempts: u32,
     pub rate_limit_window_seconds: u64,
     pub cors_allowed_origins: String,
@@ -88,6 +96,8 @@ impl fmt::Debug for Settings {
         f.debug_struct("Settings")
             .field("server_host", &self.server_host)
             .field("server_port", &self.server_port)
+            .field("tls_cert_path", &self.tls_cert_path)
+            .field("tls_key_path", &self.tls_key_path)
             .field("database_url", &format!("<redacted>@{db_sanitized}"))
             .field("rate_limit_max_attempts", &self.rate_limit_max_attempts)
             .field("rate_limit_window_seconds", &self.rate_limit_window_seconds)
@@ -263,6 +273,42 @@ fn parse_bool_env(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// Parses the native-TLS env vars (`TLS_CERT_PATH`/`TLS_KEY_PATH`) into a pair
+/// of paths. Returns `Ok((None, None))` when both are unset (plain HTTP,
+/// reverse-proxy TLS), `Ok((Some, Some))` when both are set (native rustls
+/// HTTPS), and `Err` when exactly one is set -- a half-configured pair is
+/// almost always a mistake, and silently serving plaintext while the operator
+/// believes HTTPS is on would be worse than failing to start (see #93). Empty
+/// strings count as unset.
+///
+/// `pub` (rather than module-private) so it can be unit tested directly without
+/// going through `Settings::from_env`'s real-environment-variable reads. See
+/// #142 review (CodeRabbit).
+pub fn parse_tls_paths(
+    raw_cert: Option<String>,
+    raw_key: Option<String>,
+) -> Result<(Option<String>, Option<String>), String> {
+    let cert = raw_cert
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .find(|s| !s.is_empty());
+    let key = raw_key
+        .into_iter()
+        .map(|s| s.trim().to_string())
+        .find(|s| !s.is_empty());
+    match (&cert, &key) {
+        (Some(_), None) => Err(
+            "TLS_CERT_PATH is set but TLS_KEY_PATH is not; set both together to enable native TLS"
+                .to_string(),
+        ),
+        (None, Some(_)) => Err(
+            "TLS_KEY_PATH is set but TLS_CERT_PATH is not; set both together to enable native TLS"
+                .to_string(),
+        ),
+        _ => Ok((cert, key)),
+    }
+}
+
 impl Settings {
     /// Builds `Settings` from process environment variables, applying defaults
     /// for everything optional (see each field's own doc comment for its
@@ -278,6 +324,13 @@ impl Settings {
     pub fn from_env() -> Result<Self, String> {
         let db_require_ssl = parse_required_ssl_flag(std::env::var("DB_REQUIRE_SSL").ok())?;
         let enable_swagger = parse_bool_env("ENABLE_SWAGGER");
+
+        // Native TLS (see #93): both paths must be present to enable it. A
+        // half-configured pair aborts startup (see `parse_tls_paths`).
+        let (tls_cert_path, tls_key_path) = parse_tls_paths(
+            std::env::var("TLS_CERT_PATH").ok(),
+            std::env::var("TLS_KEY_PATH").ok(),
+        )?;
 
         let database_url = {
             let raw = std::env::var("DATABASE_URL")
@@ -306,6 +359,8 @@ impl Settings {
                 .unwrap_or_else(|_| "3000".to_string())
                 .parse()
                 .map_err(|_| "SERVER_PORT must be a valid number".to_string())?,
+            tls_cert_path,
+            tls_key_path,
             rate_limit_max_attempts: std::env::var("RATE_LIMIT_MAX_ATTEMPTS")
                 .unwrap_or_else(|_| "10".to_string())
                 .parse()

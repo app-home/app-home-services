@@ -50,6 +50,14 @@ async fn main() {
     dotenvy::dotenv().ok();
     app_home_services::infrastructure::telemetry::logging::init_logging();
 
+    // rustls 0.23 only auto-selects a crypto provider when exactly one of
+    // aws-lc-rs/ring is compiled in; this graph has both (aws-lc-rs via
+    // axum-server/sqlx, ring via reqwest's hyper-rustls), so the provider must
+    // be installed explicitly or any rustls handshake panics (see #93). Do it
+    // first thing, before sqlx or native TLS touch it.
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
+        .expect("Failed to install default rustls crypto provider");
+
     tracing::info!("Starting App Home Services");
 
     // Installed once, up front, before anything below records a metric -- the
@@ -314,20 +322,58 @@ async fn main() {
 
     tracing::info!(address = %addr, "Listening");
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("Failed to bind address");
+    // Native TLS (see #93): when both TLS_CERT_PATH and TLS_KEY_PATH are set,
+    // terminate HTTPS here via rustls instead of relying on a reverse proxy.
+    // `Settings::from_env` already guarantees the pair is either both set or
+    // both unset. The PEM files are loaded up front so a missing or malformed
+    // certificate fails startup loudly, not at the first handshake.
+    let tls_config = match (&settings.tls_cert_path, &settings.tls_key_path) {
+        (Some(cert_path), Some(key_path)) => {
+            tracing::info!(cert_path = %cert_path, "Native TLS enabled (rustls)");
+            Some(
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("Failed to load TLS certificate/key from {cert_path}: {e}")
+                    }),
+            )
+        }
+        (None, None) => {
+            tracing::info!(
+                "Native TLS disabled: TLS termination is expected from a reverse proxy in front of this service"
+            );
+            None
+        }
+        _ => unreachable!("Settings::from_env enforces TLS_CERT_PATH/TLS_KEY_PATH together"),
+    };
 
     // `into_make_service_with_connect_info` exposes the real TCP peer address to
     // extractors (`ConnectInfo<SocketAddr>`), which the login and refresh handlers use
     // to safely resolve the client IP for rate limiting (see `resolve_client_ip`), and
     // which the `/metrics` IP allowlist guard uses the same way.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-    .expect("Server error");
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+
+    match tls_config {
+        // axum-server binds via tokio internally (converting a pre-bound
+        // std::net::TcpListener stalls connection handling on some platforms),
+        // and hands each connection's peer `SocketAddr` to the make service,
+        // which axum's `Connected<SocketAddr>` impl (see
+        // axum::extract::connect_info) turns into the same `ConnectInfo<SocketAddr>`
+        // extension the plain path provides.
+        Some(tls) => {
+            let addr: SocketAddr = addr.parse().expect("Failed to parse bind address");
+            axum_server::bind_rustls(addr, tls)
+                .serve(service)
+                .await
+                .expect("Server error");
+        }
+        None => {
+            let listener = tokio::net::TcpListener::bind(&addr)
+                .await
+                .expect("Failed to bind address");
+            axum::serve(listener, service).await.expect("Server error");
+        }
+    }
 }
 
 /// Spawns a background task that, every 15 seconds, reads each rate limiter's Redis

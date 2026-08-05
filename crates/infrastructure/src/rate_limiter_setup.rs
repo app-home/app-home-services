@@ -107,6 +107,8 @@ mod tests {
             database_url: String::new(),
             server_host: "127.0.0.1".to_string(),
             server_port: 3000,
+            tls_cert_path: None,
+            tls_key_path: None,
             rate_limit_max_attempts: 10,
             rate_limit_window_seconds: 300,
             cors_allowed_origins: String::new(),
