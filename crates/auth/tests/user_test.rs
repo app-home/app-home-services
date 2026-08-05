@@ -29,6 +29,32 @@ fn test_user_struct_creation() {
 }
 
 #[test]
+fn debug_of_a_user_never_contains_the_password_hash() {
+    // Derived Debug on User forwards to HashedPassword's redacted Debug, so
+    // formatting a whole entity in a log line must not leak hash + salt (#97).
+    let now = chrono::Utc::now();
+    let email = Email::new("admin@example.com").unwrap();
+    let password_hash = HashedPassword::new("$2b$12$hash").unwrap();
+    let user = User::new(
+        Uuid::now_v7(),
+        Some("admin".to_string()),
+        email,
+        "Administrator".to_string(),
+        Some(password_hash),
+        AuthProvider::Local,
+        now,
+        now,
+    );
+
+    let rendered = format!("{user:?}");
+    assert!(
+        !rendered.contains("$2b$12$hash"),
+        "User Debug must not contain the password hash, got: {rendered}"
+    );
+    assert!(rendered.contains("<redacted>"));
+}
+
+#[test]
 fn test_google_user_no_password_hash() {
     let email = Email::new("googleuser@gmail.com").unwrap();
     let user = User::new(
