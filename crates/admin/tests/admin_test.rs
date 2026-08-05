@@ -36,10 +36,20 @@ impl MockAdminRepo {
 impl AdminRepository for MockAdminRepo {
     async fn list_users(&self, page: u32, per_page: u32) -> Result<ListUsersResult, AdminError> {
         let mut users: Vec<AdminUser> = self.store.lock().unwrap().values().cloned().collect();
-        users.sort_by_key(|b| std::cmp::Reverse(b.created_at()));
+        users.sort_by(|left, right| {
+            right
+                .created_at()
+                .cmp(&left.created_at())
+                .then_with(|| right.id().cmp(&left.id()))
+        });
         let total = users.len() as u64;
-        let offset = (page.saturating_sub(1) * per_page) as usize;
-        let users = users.into_iter().skip(offset).take(per_page as usize).collect();
+        let offset = u64::from(page.saturating_sub(1)) * u64::from(per_page);
+        let offset = usize::try_from(offset).unwrap_or(usize::MAX);
+        let users = users
+            .into_iter()
+            .skip(offset)
+            .take(per_page as usize)
+            .collect();
         Ok(ListUsersResult { users, total })
     }
 
@@ -246,6 +256,54 @@ async fn list_users_paginates_by_created_at_desc() {
     let beyond = list_users::list_users(&repo, 4, 2).await.unwrap();
     assert!(beyond.users.is_empty());
     assert_eq!(beyond.total, 5);
+}
+
+#[tokio::test]
+async fn list_users_uses_id_to_break_created_at_ties() {
+    let repo = MockAdminRepo::new();
+    let created_at = Utc::now();
+    for (id, username) in [
+        (Uuid::from_u128(1), "user-1"),
+        (Uuid::from_u128(3), "user-3"),
+        (Uuid::from_u128(2), "user-2"),
+    ] {
+        repo.seed(AdminUser::new(
+            id,
+            Some(username.to_string()),
+            format!("{username}@example.com"),
+            "Display Name".to_string(),
+            Role::User,
+            "local".to_string(),
+            created_at,
+            created_at,
+        ));
+    }
+
+    let page1 = list_users::list_users(&repo, 1, 2).await.unwrap();
+    let page2 = list_users::list_users(&repo, 2, 2).await.unwrap();
+
+    assert_eq!(
+        page1.users.iter().map(|user| user.id()).collect::<Vec<_>>(),
+        [Uuid::from_u128(3), Uuid::from_u128(2)]
+    );
+    assert_eq!(
+        page2.users.iter().map(|user| user.id()).collect::<Vec<_>>(),
+        [Uuid::from_u128(1)]
+    );
+}
+
+#[tokio::test]
+async fn list_users_preserves_offsets_larger_than_u32() {
+    let repo = MockAdminRepo::new();
+    repo.seed(make_admin_user(Uuid::now_v7(), Some("alice"), Role::User));
+
+    let page = u32::MAX / 500 + 3;
+    let offset = u64::from(page - 1) * 500;
+    assert!(offset > u64::from(u32::MAX));
+
+    let result = list_users::list_users(&repo, page, 500).await.unwrap();
+    assert!(result.users.is_empty());
+    assert_eq!(result.total, 1);
 }
 
 // ---------------------------------------------------------------------------

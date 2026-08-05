@@ -42,15 +42,18 @@ impl UserDirectory for PostgresUserDirectory {
     async fn list_user_summaries(
         &self,
         limit: u32,
-        offset: u32,
+        offset: u64,
     ) -> Result<Vec<UserSummary>, DomainError> {
+        let offset = i64::try_from(offset).map_err(|_| {
+            DomainError::InternalError("pagination offset exceeds PostgreSQL range".to_string())
+        })?;
         let rows = sqlx::query_as::<_, UserSummaryRow>(
             "SELECT id, username, email, display_name, auth_provider, created_at, updated_at
-             FROM users ORDER BY created_at DESC
+             FROM users ORDER BY created_at DESC, id DESC
              LIMIT $1 OFFSET $2",
         )
         .bind(i64::from(limit))
-        .bind(i64::from(offset))
+        .bind(offset)
         .fetch_all(&self.pool)
         .await
         .map_err(|e| DomainError::InternalError(e.to_string()))?;

@@ -8,10 +8,12 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::adapters::inbound::responses::{ErrorResponse, UpdateRoleRequest, UserResponse, UsersResponse};
+use crate::adapters::inbound::responses::{
+    ErrorResponse, UpdateRoleRequest, UserResponse, UsersResponse,
+};
 use crate::application::ports::admin_repository::AdminRepository;
-use crate::application::use_cases::{get_user, list_users, update_user_role};
 use crate::application::use_cases::list_users::{DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE};
+use crate::application::use_cases::{get_user, list_users, update_user_role};
 use crate::domain::errors::AdminError;
 use shared::auth::AuthenticatedUser;
 use uuid::Uuid;
@@ -44,6 +46,10 @@ fn user_to_response(user: crate::domain::entities::admin_user::AdminUser) -> Use
 }
 
 #[derive(Deserialize)]
+/// Raw pagination query parameters for the admin user list.
+///
+/// `page` is 1-based and must not be zero; omitted values default to 1.
+/// `per_page` defaults to 100 and is clamped to the supported 1..=500 range.
 pub struct ListUsersQuery {
     pub page: Option<u32>,
     pub per_page: Option<u32>,

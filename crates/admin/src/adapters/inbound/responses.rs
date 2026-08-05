@@ -17,6 +17,7 @@ pub struct UserResponse {
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
+/// A page of users together with the normalized request parameters and total count.
 pub struct UsersResponse {
     pub items: Vec<UserResponse>,
     pub page: u32,

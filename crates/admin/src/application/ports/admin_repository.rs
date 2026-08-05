@@ -16,8 +16,9 @@ pub struct ListUsersResult {
 #[async_trait]
 pub trait AdminRepository: Send + Sync {
     /// Returns `per_page` users for 1-based `page`, ordered by `created_at`
-    /// descending, together with the total user count. `page`/`per_page` are
-    /// validated by the caller before they reach the repository (see #101).
+    /// descending and then `id` descending, together with the total user count.
+    /// `page`/`per_page` are validated by the caller before they reach the
+    /// repository (see #101).
     async fn list_users(&self, page: u32, per_page: u32) -> Result<ListUsersResult, AdminError>;
     async fn get_user(&self, user_id: Uuid) -> Result<AdminUser, AdminError>;
     async fn is_admin(&self, user_id: Uuid) -> Result<bool, AdminError>;

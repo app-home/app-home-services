@@ -7,6 +7,10 @@ pub const DEFAULT_PAGE_SIZE: u32 = 100;
 /// this many rows in memory.
 pub const MAX_PAGE_SIZE: u32 = 500;
 
+/// Returns the requested user page and its total count.
+///
+/// Callers must validate that `page` is 1-based and normalize `per_page` to the
+/// supported range before invoking this use case.
 pub async fn list_users(
     repo: &dyn AdminRepository,
     page: u32,

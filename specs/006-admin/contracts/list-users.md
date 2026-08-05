@@ -14,7 +14,9 @@
 
 ## Response 200 (Success)
 
-Users ordered by `created_at` descending in a pagination envelope.
+Users are ordered by `created_at` descending, then `id` descending, in a
+pagination envelope. The `id` tie-breaker makes page membership deterministic
+when users share a creation timestamp.
 
 ```json
 {
@@ -71,6 +73,6 @@ Users ordered by `created_at` descending in a pagination envelope.
 ## Notes
 
 - Requires JWT authentication with admin role.
-- Returns a page of users ordered by `created_at` descending.
+- Returns a page of users ordered by `created_at` descending, then `id` descending.
 - `username` may be null for Google-authenticated users.
 - Server-enforced bounds prevent single-request memory exhaustion (see #101).
