@@ -303,7 +303,7 @@ A single `PgPool` is created once at startup (`infrastructure::database::create_
 
 **`DB_ACQUIRE_TIMEOUT_SECONDS`** bounds how long a request waits for a pool connection when the pool is fully checked out, turning exhaustion into a fast, explicit error rather than a hung request. **`DB_IDLE_TIMEOUT_SECONDS`** and **`DB_MAX_LIFETIME_SECONDS`** recycle connections proactively -- useful if there's a proxy, load balancer, or managed Postgres provider between the app and the database that can silently drop long-lived idle connections.
 
-`/api/health` (see API Endpoints above) exercises this same pool with a real `SELECT 1` query, so it reflects actual database reachability rather than just "the process is running."
+`/api/health` (see API Endpoints above) exercises this same pool with a real `SELECT 1` query, so it reflects actual database reachability rather than just "the process is running." `db_pool_size` and `db_pool_idle` (see Metrics & Alerting below) give ongoing visibility into pool utilization -- `db_pool_size - db_pool_idle` is the number of connections currently checked out, which approaching `DB_MAX_CONNECTIONS` is the signal for pool exhaustion (see #100).
 
 ## Testing
 
@@ -389,6 +389,8 @@ This does not require credentials, so it should still only be reachable from ins
 | `rate_limiter_redis_errors_total` | Counter | `scope="login"` \| `scope="refresh"` | Cumulative count of Redis errors encountered by the rate limiter. Each error means the limiter fell back to its in-memory per-instance budget (see #89) instead of enforcing the shared Redis counter, so cross-instance coordination was unavailable for that operation. Absent/zero when running on the in-memory backend (`REDIS_URL` unset), since that backend has no equivalent failure mode. Resets to 0 on process restart. Polled from the rate limiter's internal counter and republished every 15 seconds. |
 | `access_token_blacklist_redis_errors_total` | Counter | — | Cumulative count of Redis errors encountered by the access-token revocation list (i.e. every time it failed open and treated an unrevoked-or-unknown token as valid instead of enforcing revocation). Absent/zero on the in-memory backend (`REDIS_URL` unset). Resets to 0 on process restart. Polled and republished every 15 seconds, same cadence as the rate limiter counter. |
 | `access_token_revocation_outbox_pending` | Gauge | — | Number of journaled access-token revocations not yet flushed to Redis (rows currently in `access_token_revocation_outbox`). Only meaningful on the Redis blacklist backend (`REDIS_URL` set); the in-memory backend never journals, so this stays at 0. Republished by the durable-revocation flush worker on every sweep (see `REVOCATION_FLUSH_INTERVAL_SECONDS`). Sustained non-zero is a sign Redis has been down long enough to accumulate a backlog -- see `docs/alerting.md`. |
+| `db_pool_size` | Gauge | — | Total connections (checked out + idle) currently held by the shared Postgres pool. Republished every 15 seconds from `PgPool::size()` (see #100). |
+| `db_pool_idle` | Gauge | — | Idle connections currently available in the shared Postgres pool. `db_pool_size - db_pool_idle` is the number currently checked out; that number approaching `DB_MAX_CONNECTIONS` (see Database Connection Pool above) is the signal for pool exhaustion. Republished every 15 seconds from `PgPool::num_idle()` (see #100). |
 
 ### Scraping
 
@@ -423,6 +425,8 @@ Example alert rules live in `prometheus/alerts.yml`:
 - **`AccessTokenRevocationBacklogAccumulating`** (`severity: warning`) fires when the durable-revocation backlog (`access_token_revocation_outbox_pending`) stays above 0 for 5 minutes straight, meaning journaled revocations are accumulating because Redis has been down.
 
 The two error-counter alerts start deliberately low (`> 0`) since there's no baseline yet for what "normal" transient Redis noise looks like in this deployment -- see [`docs/alerting.md`](docs/alerting.md) for the full reasoning and a concrete process for raising the threshold once you have a couple of weeks of real data.
+
+`db_pool_size`/`db_pool_idle` don't have a dedicated alert rule yet (see #100) -- what counts as "too close to exhaustion" depends on `DB_MAX_CONNECTIONS`, which varies by deployment, so there's no one sensible default threshold to ship. Graphing `db_pool_size - db_pool_idle` against `DB_MAX_CONNECTIONS` is a reasonable starting dashboard panel.
 
 ## Security
 
