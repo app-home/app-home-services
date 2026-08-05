@@ -38,6 +38,41 @@ fn dummy_password_hash(cost: u32) -> Option<String> {
     hash
 }
 
+/// Extracts the cost embedded in a bcrypt hash like `$2b$12$...`.
+fn stored_hash_cost(hash: &str) -> Option<u32> {
+    let mut parts = hash.split('$');
+    if !parts.next()?.is_empty() {
+        return None;
+    }
+    let _version = parts.next()?;
+    parts.next()?.parse().ok()
+}
+
+/// Equalizes the verification time of a stored hash whose cost is lower than
+/// the configured cost (a pre-#94 legacy hash), so its login takes ~the same
+/// time as a not-found login (which spends `configured_cost` work).
+///
+/// bcrypt work doubles per +1 cost, so `2^(D-C)` verifications at cost `C`
+/// take the same time as a single verification at cost `D`. A found user's
+/// real verification already spends `C`; padding runs the remaining
+/// `2^(D-C) - 1` verifications against the cached dummy hash at cost `C`.
+fn pad_timing_to(stored_hash: &str, configured_cost: u32) {
+    let Some(stored_cost) = stored_hash_cost(stored_hash) else {
+        return;
+    };
+    if stored_cost >= configured_cost {
+        return;
+    }
+    let Some(dummy) = dummy_password_hash(stored_cost) else {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        return;
+    };
+    let extra_verifies = (1u32 << (configured_cost - stored_cost)) - 1;
+    for _ in 0..extra_verifies {
+        let _ = bcrypt::verify("dummy-password-for-timing-safety", &dummy);
+    }
+}
+
 /// Stateless bcrypt password-hashing service.
 ///
 /// All operations take an explicit `cost` (the configured
@@ -68,13 +103,16 @@ impl PasswordVerificationService {
 /// the stored password; it only affects the dummy-hash path for missing users.
 pub fn verify_password_timing_safe(user: Option<&User>, password: &str, cost: u32) -> bool {
     match user.and_then(|u| u.password_hash().map(|h| h.as_ref())) {
-        Some(hash) => match bcrypt::verify(password, hash) {
-            Ok(valid) => valid,
-            Err(e) => {
-                error!(error = %e, "bcrypt::verify failed during login");
-                false
+        Some(hash) => {
+            pad_timing_to(hash, cost);
+            match bcrypt::verify(password, hash) {
+                Ok(valid) => valid,
+                Err(e) => {
+                    error!(error = %e, "bcrypt::verify failed during login");
+                    false
+                }
             }
-        },
+        }
         None => match dummy_password_hash(cost) {
             Some(hash) => {
                 let _ = bcrypt::verify(password, &hash);

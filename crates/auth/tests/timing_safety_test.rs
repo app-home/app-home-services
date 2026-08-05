@@ -140,6 +140,35 @@ fn a_non_default_cost_keeps_timing_similar_for_both_paths() {
 }
 
 #[test]
+fn legacy_cost_hash_and_wrong_password_take_similar_time() {
+    // A pre-#94 hash stored at cost 10 verifies at its embedded cost, ~4x
+    // faster than cost 12. `pad_timing_to` must pad the legacy path up to the
+    // configured cost so login timing cannot distinguish legacy users.
+    const LEGACY_BCRYPT_COST: u32 = 10;
+
+    let legacy_hash = bcrypt::hash("correct-password", LEGACY_BCRYPT_COST).unwrap();
+    let legacy_user = make_user(Some(HashedPassword::new(legacy_hash).unwrap()));
+
+    let legacy_avg = average_duration(
+        ITERATIONS,
+        || verify_password_timing_safe(Some(&legacy_user), "wrong-password", DEFAULT_BCRYPT_COST),
+        false,
+    );
+    let not_found_avg = average_duration(
+        ITERATIONS,
+        || verify_password_timing_safe(None, "wrong-password", DEFAULT_BCRYPT_COST),
+        false,
+    );
+
+    assert_similar_timing(
+        "legacy cost-10 stored hash",
+        legacy_avg,
+        "username not found",
+        not_found_avg,
+    );
+}
+
+#[test]
 fn correct_password_still_verifies_successfully() {
     let real_hash = bcrypt::hash("correct-password", DEFAULT_BCRYPT_COST).unwrap();
     let user = make_user(Some(HashedPassword::new(real_hash).unwrap()));
