@@ -25,15 +25,21 @@ pub async fn login_with_password(
     username: &str,
     password: &str,
 ) -> Result<LoginResult, AuthError> {
-    let mut aggregate = user_repo
-        .find_aggregate_by_username(username)
-        .await?
-        .ok_or(AuthError::InvalidCredentials)?;
+    let aggregate = user_repo.find_aggregate_by_username(username).await?;
 
-    let password_ok = verify_password_timing_safe(Some(aggregate.user()), password);
+    // Verify against the existing user when found, otherwise against the
+    // precomputed dummy hash for the same cost, so a username-not-found login
+    // takes ~the same time as a wrong-password login (timing safety).
+    let password_ok = verify_password_timing_safe(
+        aggregate.as_ref().map(|a| a.user()),
+        password,
+        settings.bcrypt_cost,
+    );
     if !password_ok {
         return Err(AuthError::InvalidCredentials);
     }
+
+    let mut aggregate = aggregate.ok_or(AuthError::InvalidCredentials)?;
 
     create_session_tokens(user_repo, jwt_service, settings, &mut aggregate).await
 }
@@ -51,7 +57,7 @@ async fn create_session_tokens(
         chrono::Utc::now() + chrono::Duration::days(settings.refresh_token_expiry_days);
 
     let refresh_hash = HashedPassword::new(
-        bcrypt::hash(&token_pair.refresh_token, bcrypt::DEFAULT_COST)
+        bcrypt::hash(&token_pair.refresh_token, settings.bcrypt_cost)
             .map_err(|_| AuthError::TokenGenerationFailed)?,
     )
     .map_err(|_| AuthError::TokenGenerationFailed)?;

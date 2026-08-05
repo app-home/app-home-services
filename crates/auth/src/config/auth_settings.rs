@@ -5,6 +5,46 @@ pub const MIN_JWT_SECRET_LEN: usize = 32;
 
 const MIN_UNIQUE_CHARS: usize = 8;
 
+/// OWASP minimum bcrypt cost for new applications (see #94). Lower is a
+/// startup error; higher is allowed up to bcrypt's max (31) for slower
+/// hardware-limited tuning.
+pub const DEFAULT_BCRYPT_COST: u32 = 12;
+
+/// Minimum permitted bcrypt cost (the OWASP floor). Anything below this is a
+/// fatal startup error via `validate_bcrypt_cost`.
+pub const MIN_BCRYPT_COST: u32 = 12;
+
+/// Maximum permitted bcrypt cost (bcrypt's own limit). Costs above this are
+/// rejected because bcrypt would refuse to hash at them anyway.
+pub const MAX_BCRYPT_COST: u32 = 31;
+
+/// Validates `BCRYPT_COST`. Returning `Err` here is a fatal startup error (see
+/// `AuthSettings::from_env`), matching the fail-fast pattern of the JWT_SECRET
+/// check (#82): the alternative -- silently hashing at a cost an operator
+/// lowered below the OWASP floor -- is exactly the weakening #94 exists to
+/// prevent.
+pub fn validate_bcrypt_cost(cost: u32) -> Result<(), String> {
+    if cost < MIN_BCRYPT_COST {
+        return Err(format!(
+            concat!(
+                "BCRYPT_COST must be at least {} ",
+                "(OWASP minimum for new applications); got {}"
+            ),
+            MIN_BCRYPT_COST, cost
+        ));
+    }
+    if cost > MAX_BCRYPT_COST {
+        return Err(format!(
+            concat!(
+                "BCRYPT_COST must be at most {} ",
+                "(bcrypt's maximum); got {}"
+            ),
+            MAX_BCRYPT_COST, cost
+        ));
+    }
+    Ok(())
+}
+
 pub fn validate_jwt_secret(secret: &str) -> Result<(), String> {
     if secret.len() < MIN_JWT_SECRET_LEN {
         return Err(format!(
@@ -139,6 +179,10 @@ pub struct AuthSettings {
     pub jwt_audience: String,
     pub access_token_expiry_minutes: i64,
     pub refresh_token_expiry_days: i64,
+    /// bcrypt cost used for password and refresh-token hashing. Env-configurable
+    /// (`BCRYPT_COST`, default `DEFAULT_BCRYPT_COST` = 12) with a fail-fast
+    /// floor of 12. See #94.
+    pub bcrypt_cost: u32,
 }
 
 impl fmt::Debug for AuthSettings {
@@ -162,6 +206,7 @@ impl fmt::Debug for AuthSettings {
                 &self.access_token_expiry_minutes,
             )
             .field("refresh_token_expiry_days", &self.refresh_token_expiry_days)
+            .field("bcrypt_cost", &self.bcrypt_cost)
             .finish()
     }
 }
@@ -208,6 +253,19 @@ impl AuthSettings {
                 .unwrap_or_else(|_| "7".to_string())
                 .parse()
                 .map_err(|_| "REFRESH_TOKEN_EXPIRY_DAYS must be a valid number".to_string())?,
+            bcrypt_cost: {
+                let cost = match std::env::var("BCRYPT_COST") {
+                    Ok(value) => value
+                        .parse()
+                        .map_err(|_| "BCRYPT_COST must be a valid number".to_string())?,
+                    Err(std::env::VarError::NotPresent) => DEFAULT_BCRYPT_COST,
+                    Err(std::env::VarError::NotUnicode(_)) => {
+                        return Err("BCRYPT_COST must be valid Unicode".to_string());
+                    }
+                };
+                validate_bcrypt_cost(cost)?;
+                cost
+            },
         })
     }
 }
@@ -271,5 +329,66 @@ mod tests {
     fn does_not_flag_a_password_at_or_above_the_recommended_length() {
         let password = "C0rrect-Horse-Battery9";
         assert!(!default_user_password_below_recommended_length(password));
+    }
+
+    #[test]
+    fn accepts_the_default_bcrypt_cost_and_the_upper_bound() {
+        assert!(validate_bcrypt_cost(DEFAULT_BCRYPT_COST).is_ok());
+        assert!(validate_bcrypt_cost(MAX_BCRYPT_COST).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_bcrypt_cost_below_the_owasp_floor() {
+        let result = validate_bcrypt_cost(MIN_BCRYPT_COST - 1);
+        assert!(
+            result.is_err(),
+            "a cost below the OWASP minimum must be rejected, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_a_bcrypt_cost_above_bcrypts_maximum() {
+        let result = validate_bcrypt_cost(MAX_BCRYPT_COST + 1);
+        assert!(
+            result.is_err(),
+            "a cost above bcrypt's maximum must be rejected, got {result:?}"
+        );
+    }
+
+    // Environment tests below mutate process-wide env vars, so they serialize on
+    // this mutex (other tests in this crate never read these vars).
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn set_valid_auth_env() {
+        // SAFETY: guarded by ENV_MUTEX; no concurrent reads of these vars in tests.
+        unsafe {
+            std::env::set_var("DEFAULT_USER_PASSWORD", "Test-Password-9!");
+            std::env::set_var("JWT_SECRET", "0123456789abcdef0123456789abcdef01234567");
+        }
+    }
+
+    #[test]
+    fn from_env_defaults_bcrypt_cost_when_unset() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        set_valid_auth_env();
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::remove_var("BCRYPT_COST") };
+        let settings = AuthSettings::from_env().expect("a valid env should load");
+        assert_eq!(settings.bcrypt_cost, DEFAULT_BCRYPT_COST);
+    }
+
+    #[test]
+    fn from_env_rejects_a_non_numeric_bcrypt_cost() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        set_valid_auth_env();
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::set_var("BCRYPT_COST", "not-a-number") };
+        let result = AuthSettings::from_env();
+        assert!(
+            result.is_err(),
+            "a non-numeric BCRYPT_COST must be rejected, got {result:?}"
+        );
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::remove_var("BCRYPT_COST") };
     }
 }

@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use auth::config::auth_settings::DEFAULT_BCRYPT_COST;
 use auth::domain::entities::user::User;
 use auth::domain::services::password_verification::verify_password_timing_safe;
 use shared::domain::value_objects::auth_provider::AuthProvider;
@@ -8,6 +9,11 @@ use shared::domain::value_objects::hashed_password::HashedPassword;
 
 const ITERATIONS: u32 = 8;
 const MAX_RELATIVE_DIFFERENCE: f64 = 0.5;
+// A second valid cost, deliberately different from DEFAULT_BCRYPT_COST. If
+// verify_password_timing_safe ignored its `cost` argument (always using the
+// default), the not-found path below would run ~4x slower than the real-verify
+// path and the ratio assertion would fail.
+const ALT_BCRYPT_COST: u32 = 4;
 
 fn make_user(password_hash: Option<HashedPassword>) -> User {
     let email = Email::new("alice@example.com").unwrap();
@@ -28,8 +34,8 @@ fn make_user(password_hash: Option<HashedPassword>) -> User {
     )
 }
 
-fn average_duration(mut f: impl FnMut() -> bool, expected: bool) -> f64 {
-    let total: Duration = (0..ITERATIONS)
+fn average_duration(iterations: u32, mut f: impl FnMut() -> bool, expected: bool) -> f64 {
+    let total: Duration = (0..iterations)
         .map(|_| {
             let start = Instant::now();
             let result = f();
@@ -39,7 +45,7 @@ fn average_duration(mut f: impl FnMut() -> bool, expected: bool) -> f64 {
         })
         .sum();
 
-    total.as_secs_f64() / f64::from(ITERATIONS)
+    total.as_secs_f64() / f64::from(iterations)
 }
 
 fn assert_similar_timing(label_a: &str, avg_a: f64, label_b: &str, avg_b: f64) {
@@ -52,15 +58,17 @@ fn assert_similar_timing(label_a: &str, avg_a: f64, label_b: &str, avg_b: f64) {
 
 #[test]
 fn username_not_found_and_wrong_password_take_similar_time() {
-    let real_hash = bcrypt::hash("correct-password", bcrypt::DEFAULT_COST).unwrap();
+    let real_hash = bcrypt::hash("correct-password", DEFAULT_BCRYPT_COST).unwrap();
     let existing_user = make_user(Some(HashedPassword::new(real_hash).unwrap()));
 
     let wrong_password_avg = average_duration(
-        || verify_password_timing_safe(Some(&existing_user), "wrong-password"),
+        ITERATIONS,
+        || verify_password_timing_safe(Some(&existing_user), "wrong-password", DEFAULT_BCRYPT_COST),
         false,
     );
     let not_found_avg = average_duration(
-        || verify_password_timing_safe(None, "wrong-password"),
+        ITERATIONS,
+        || verify_password_timing_safe(None, "wrong-password", DEFAULT_BCRYPT_COST),
         false,
     );
 
@@ -74,16 +82,24 @@ fn username_not_found_and_wrong_password_take_similar_time() {
 
 #[test]
 fn google_only_account_and_wrong_password_take_similar_time() {
-    let real_hash = bcrypt::hash("correct-password", bcrypt::DEFAULT_COST).unwrap();
+    let real_hash = bcrypt::hash("correct-password", DEFAULT_BCRYPT_COST).unwrap();
     let user_with_password = make_user(Some(HashedPassword::new(real_hash).unwrap()));
     let google_only_user = make_user(None);
 
     let wrong_password_avg = average_duration(
-        || verify_password_timing_safe(Some(&user_with_password), "wrong-password"),
+        ITERATIONS,
+        || {
+            verify_password_timing_safe(
+                Some(&user_with_password),
+                "wrong-password",
+                DEFAULT_BCRYPT_COST,
+            )
+        },
         false,
     );
     let google_only_avg = average_duration(
-        || verify_password_timing_safe(Some(&google_only_user), "anything"),
+        ITERATIONS,
+        || verify_password_timing_safe(Some(&google_only_user), "anything", DEFAULT_BCRYPT_COST),
         false,
     );
 
@@ -96,11 +112,51 @@ fn google_only_account_and_wrong_password_take_similar_time() {
 }
 
 #[test]
+fn a_non_default_cost_keeps_timing_similar_for_both_paths() {
+    // Small per-op times (~ms) amplify measurement jitter, so average more
+    // iterations than the default-cost tests to keep the ratio comparison stable.
+    const ALT_ITERATIONS: u32 = 40;
+
+    let real_hash = bcrypt::hash("correct-password", ALT_BCRYPT_COST).unwrap();
+    let existing_user = make_user(Some(HashedPassword::new(real_hash).unwrap()));
+
+    let wrong_password_avg = average_duration(
+        ALT_ITERATIONS,
+        || verify_password_timing_safe(Some(&existing_user), "wrong-password", ALT_BCRYPT_COST),
+        false,
+    );
+    let not_found_avg = average_duration(
+        ALT_ITERATIONS,
+        || verify_password_timing_safe(None, "wrong-password", ALT_BCRYPT_COST),
+        false,
+    );
+
+    assert_similar_timing(
+        "wrong password (non-default cost)",
+        wrong_password_avg,
+        "username not found (non-default cost)",
+        not_found_avg,
+    );
+}
+
+#[test]
 fn correct_password_still_verifies_successfully() {
-    let real_hash = bcrypt::hash("correct-password", bcrypt::DEFAULT_COST).unwrap();
+    let real_hash = bcrypt::hash("correct-password", DEFAULT_BCRYPT_COST).unwrap();
     let user = make_user(Some(HashedPassword::new(real_hash).unwrap()));
 
-    assert!(verify_password_timing_safe(Some(&user), "correct-password"));
-    assert!(!verify_password_timing_safe(Some(&user), "wrong-password"));
-    assert!(!verify_password_timing_safe(None, "correct-password"));
+    assert!(verify_password_timing_safe(
+        Some(&user),
+        "correct-password",
+        DEFAULT_BCRYPT_COST
+    ));
+    assert!(!verify_password_timing_safe(
+        Some(&user),
+        "wrong-password",
+        DEFAULT_BCRYPT_COST
+    ));
+    assert!(!verify_password_timing_safe(
+        None,
+        "correct-password",
+        DEFAULT_BCRYPT_COST
+    ));
 }
