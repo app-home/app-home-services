@@ -199,6 +199,17 @@ async fn main() {
 
     let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
+    // Resolve SERVER_HOST:SERVER_PORT to a concrete SocketAddr exactly once, so
+    // the plain-HTTP and native-TLS branches share the same hostname-resolution
+    // contract: both accept a name like "localhost" or an IP literal. (The TLS
+    // branch binds via axum-server, which needs a SocketAddr -- parsing the
+    // string there would panic on non-IP hostnames.)
+    let bind_addr = tokio::net::lookup_host(&addr)
+        .await
+        .expect("Failed to resolve bind address")
+        .next()
+        .expect("Failed to resolve bind address: no addresses resolved");
+
     let health_check_pool = pool.clone();
 
     let metrics_guard_config = MetricsGuardConfig {
@@ -294,30 +305,11 @@ async fn main() {
             .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
     }
 
-    // HTTP security headers (see #90). Emitted unconditionally on every response:
-    // HSTS is inert over plain HTTP (browsers only process it on HTTPS responses),
-    // so it is safe to send even when TLS is terminated by a reverse proxy ahead
-    // of this service. CSP is deliberately NOT set: this service renders no HTML
-    // except the Swagger UI when ENABLE_SWAGGER=true (which relies on inline
-    // scripts/CDN assets), so a strict CSP would break it without adding value.
-    let app = app
+    // HTTP security headers (see #90) -- see
+    // `security_headers::apply_security_headers` for why each is set and why
+    // HSTS is emitted unconditionally.
+    let app = app_home_services::security_headers::apply_security_headers(app)
         .layer(cors)
-        .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
-            axum::http::header::STRICT_TRANSPORT_SECURITY,
-            axum::http::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-        ))
-        .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
-            axum::http::header::X_CONTENT_TYPE_OPTIONS,
-            axum::http::HeaderValue::from_static("nosniff"),
-        ))
-        .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
-            axum::http::header::X_FRAME_OPTIONS,
-            axum::http::HeaderValue::from_static("DENY"),
-        ))
-        .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
-            axum::http::header::REFERRER_POLICY,
-            axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
-        ))
         .with_state(state);
 
     tracing::info!(address = %addr, "Listening");
@@ -361,14 +353,13 @@ async fn main() {
         // axum::extract::connect_info) turns into the same `ConnectInfo<SocketAddr>`
         // extension the plain path provides.
         Some(tls) => {
-            let addr: SocketAddr = addr.parse().expect("Failed to parse bind address");
-            axum_server::bind_rustls(addr, tls)
+            axum_server::bind_rustls(bind_addr, tls)
                 .serve(service)
                 .await
                 .expect("Server error");
         }
         None => {
-            let listener = tokio::net::TcpListener::bind(&addr)
+            let listener = tokio::net::TcpListener::bind(bind_addr)
                 .await
                 .expect("Failed to bind address");
             axum::serve(listener, service).await.expect("Server error");

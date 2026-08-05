@@ -17,10 +17,13 @@ depends entirely on a reverse proxy for HTTPS. Proposed resolution (confirmed):
 - **HSTS is already emitted unconditionally** (decision from #90) and is only
   honored by browsers over real HTTPS, so no HSTS code change is needed; the
   README explains this.
-- **Coverage decision (confirmed)**: unit tests for the pure parsing/decision
-  logic + manual `curl -k` verification. No live-TLS integration test — the
-  `test-with-podman.ps1` harness only serves HTTP and adding certs/ports would
-  diverge from the existing pattern.
+- **Coverage decision**: unit tests for the pure parsing/decision logic +
+  automated native-TLS smoke test in `src/security_headers.rs` (exercises
+  `CryptoProvider::install_default`, `RustlsConfig::from_pem_file`,
+  `axum_server::bind_rustls` and a real HTTPS request against a self-signed
+  cert generated at test runtime via `rcgen`; no DB required, runs in CI) +
+  the `test-with-podman.ps1` harness for plain-HTTP no-regression. A manual
+  `curl -k` check was also performed during development.
 
 ## WP A — Settings: TLS env vars (HIGH)
 
@@ -79,11 +82,31 @@ depends entirely on a reverse proxy for HTTPS. Proposed resolution (confirmed):
 
 ## WP D — Tests + plan (MEDIUM)
 
-**Files**: `crates/shared/tests/tls_settings_test.rs`,
+**Files**: `crates/shared/tests/tls_settings_test.rs`, `src/security_headers.rs`,
 `specs/012-native-tls/plan.md` (this file), `AGENTS.md`
 
 - Unit tests on `parse_tls_paths`: both unset, both set, blank strings,
   cert-without-key error, key-without-cert error, whitespace trimming.
+- Native-TLS smoke test (`src/security_headers.rs`, `#[tokio::test]`):
+  - Generates a self-signed cert with `rcgen` (dev-dependency, pure Rust), writes
+    it to a temp dir and loads it via `RustlsConfig::from_pem_file` (same path
+    `main.rs` uses).
+  - Installs the `aws_lc_rs` crypto provider (error tolerated if a previous test
+    in the binary already installed a provider).
+  - Serves a minimal router (the exact `apply_security_headers` layers + a
+    `/api/health` route) via `axum_server::bind_rustls` on an ephemeral port
+    (free port obtained from a throwaway listener that is dropped before binding,
+    so the Windows `from_std` stall path is never hit).
+  - Performs a real HTTPS request with `reqwest`
+    (`danger_accept_invalid_certs(true)`), asserts `200` and all four security
+    headers. Runs in CI, no DB/Redis required.
+- The four security-header layers moved from inline `main.rs` into the reusable
+  `security_headers::apply_security_headers` (public, used by both `main.rs`
+  and the smoke test).
+- `SERVER_HOST:SERVER_PORT` is resolved once via `tokio::net::lookup_host`
+  before the serve branch, so plain-HTTP and native-TLS share the same
+  hostname-resolution contract (native TLS previously `parse`d the string and
+  would panic on a hostname like `localhost`).
 - SPECKIT pointer in `AGENTS.md` updated to this plan.
 
 ## Validation (all green)
@@ -92,6 +115,9 @@ depends entirely on a reverse proxy for HTTPS. Proposed resolution (confirmed):
   `cargo fmt --all --check`, `cargo test --locked --workspace`.
 - `scripts/test-with-podman.ps1 -IntegrationOnly`: **53/53** integration tests
   pass on the plain-HTTP path (no regression), incl. `security_headers_test`.
+- Automated native-TLS smoke test (`native_tls_smoke_test`) passes as part of
+  `cargo test` (no DB/Redis needed), asserting `200` + all security headers
+  over a real HTTPS connection with a runtime-generated self-signed cert.
 - Manual native-TLS smoke test: self-signed cert generated on Windows
   (`New-SelfSignedCertificate` + .NET PEM export, since no openssl), server run
   with `TLS_CERT_PATH`/`TLS_KEY_PATH` → `curl -k https://localhost:3000/api/health`

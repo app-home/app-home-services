@@ -74,7 +74,7 @@ This service expects to be served over HTTPS in production. Two mutually exclusi
 1. **Reverse proxy (default)** — deploy behind a TLS-terminating reverse proxy (Caddy, nginx, Traefik, a cloud load balancer, ...). The service binds plain HTTP on `SERVER_HOST:SERVER_PORT` and the proxy forwards to it. Configure `TRUSTED_PROXY_IPS` so client IP resolution and rate limiting use the real peer address.
 2. **Native TLS** — set both `TLS_CERT_PATH` and `TLS_KEY_PATH` (PEM files). The service then terminates HTTPS itself via rustls and you can point clients at it directly; no reverse proxy is needed for encryption. Only one of the two paths is a startup error, so a half-configured deployment can never silently serve plaintext while the operator believes HTTPS is on.
 
-The `Strict-Transport-Security` (HSTS) header is sent on every response (see #90); it is only honored by browsers when received over a real HTTPS connection, so it is harmless in the reverse-proxy plain-HTTP setup and effective in the native-TLS one. If you terminate TLS with your own certificate (e.g. a self-signed one for testing), clients must trust it explicitly or use `curl -k` / equivalent.
+The `Strict-Transport-Security` (HSTS) header is sent on every response (see #90). Browsers only honor it when received over a real HTTPS connection, regardless of whether TLS terminates at this service or at the reverse proxy, so it is harmless in the reverse-proxy plain-HTTP setup (the proxy forwards the header to the client over HTTPS, where it takes effect) and effective in the native-TLS one. If you terminate TLS with your own certificate (e.g. a self-signed one for testing), clients must trust it explicitly or use `curl -k` / equivalent.
 
 ## API Endpoints
 

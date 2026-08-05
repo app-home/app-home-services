@@ -47,3 +47,6 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 [dev-dependencies]
 tokio-test = "0.4"
 async-trait = "0.1"
+# Self-signed cert generation for the native-TLS smoke test (tests run offline,
+# no openssl dependency on any platform).
+rcgen = "0.13"
