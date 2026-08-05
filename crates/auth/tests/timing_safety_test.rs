@@ -1,5 +1,6 @@
 use std::time::{Duration, Instant};
 
+use auth::config::auth_settings::DEFAULT_BCRYPT_COST;
 use auth::domain::entities::user::User;
 use auth::domain::services::password_verification::verify_password_timing_safe;
 use shared::domain::value_objects::auth_provider::AuthProvider;
@@ -52,15 +53,15 @@ fn assert_similar_timing(label_a: &str, avg_a: f64, label_b: &str, avg_b: f64) {
 
 #[test]
 fn username_not_found_and_wrong_password_take_similar_time() {
-    let real_hash = bcrypt::hash("correct-password", bcrypt::DEFAULT_COST).unwrap();
+    let real_hash = bcrypt::hash("correct-password", DEFAULT_BCRYPT_COST).unwrap();
     let existing_user = make_user(Some(HashedPassword::new(real_hash).unwrap()));
 
     let wrong_password_avg = average_duration(
-        || verify_password_timing_safe(Some(&existing_user), "wrong-password"),
+        || verify_password_timing_safe(Some(&existing_user), "wrong-password", DEFAULT_BCRYPT_COST),
         false,
     );
     let not_found_avg = average_duration(
-        || verify_password_timing_safe(None, "wrong-password"),
+        || verify_password_timing_safe(None, "wrong-password", DEFAULT_BCRYPT_COST),
         false,
     );
 
@@ -74,16 +75,22 @@ fn username_not_found_and_wrong_password_take_similar_time() {
 
 #[test]
 fn google_only_account_and_wrong_password_take_similar_time() {
-    let real_hash = bcrypt::hash("correct-password", bcrypt::DEFAULT_COST).unwrap();
+    let real_hash = bcrypt::hash("correct-password", DEFAULT_BCRYPT_COST).unwrap();
     let user_with_password = make_user(Some(HashedPassword::new(real_hash).unwrap()));
     let google_only_user = make_user(None);
 
     let wrong_password_avg = average_duration(
-        || verify_password_timing_safe(Some(&user_with_password), "wrong-password"),
+        || {
+            verify_password_timing_safe(
+                Some(&user_with_password),
+                "wrong-password",
+                DEFAULT_BCRYPT_COST,
+            )
+        },
         false,
     );
     let google_only_avg = average_duration(
-        || verify_password_timing_safe(Some(&google_only_user), "anything"),
+        || verify_password_timing_safe(Some(&google_only_user), "anything", DEFAULT_BCRYPT_COST),
         false,
     );
 
@@ -97,10 +104,22 @@ fn google_only_account_and_wrong_password_take_similar_time() {
 
 #[test]
 fn correct_password_still_verifies_successfully() {
-    let real_hash = bcrypt::hash("correct-password", bcrypt::DEFAULT_COST).unwrap();
+    let real_hash = bcrypt::hash("correct-password", DEFAULT_BCRYPT_COST).unwrap();
     let user = make_user(Some(HashedPassword::new(real_hash).unwrap()));
 
-    assert!(verify_password_timing_safe(Some(&user), "correct-password"));
-    assert!(!verify_password_timing_safe(Some(&user), "wrong-password"));
-    assert!(!verify_password_timing_safe(None, "correct-password"));
+    assert!(verify_password_timing_safe(
+        Some(&user),
+        "correct-password",
+        DEFAULT_BCRYPT_COST
+    ));
+    assert!(!verify_password_timing_safe(
+        Some(&user),
+        "wrong-password",
+        DEFAULT_BCRYPT_COST
+    ));
+    assert!(!verify_password_timing_safe(
+        None,
+        "correct-password",
+        DEFAULT_BCRYPT_COST
+    ));
 }

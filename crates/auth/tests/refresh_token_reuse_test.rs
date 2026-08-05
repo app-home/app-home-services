@@ -231,6 +231,7 @@ fn test_settings() -> AuthSettings {
         jwt_audience: "app-home-services".to_string(),
         access_token_expiry_minutes: 15,
         refresh_token_expiry_days: 7,
+        bcrypt_cost: TEST_BCRYPT_COST,
     }
 }
 

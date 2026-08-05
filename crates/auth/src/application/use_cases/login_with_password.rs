@@ -30,7 +30,8 @@ pub async fn login_with_password(
         .await?
         .ok_or(AuthError::InvalidCredentials)?;
 
-    let password_ok = verify_password_timing_safe(Some(aggregate.user()), password);
+    let password_ok =
+        verify_password_timing_safe(Some(aggregate.user()), password, settings.bcrypt_cost);
     if !password_ok {
         return Err(AuthError::InvalidCredentials);
     }
@@ -51,7 +52,7 @@ async fn create_session_tokens(
         chrono::Utc::now() + chrono::Duration::days(settings.refresh_token_expiry_days);
 
     let refresh_hash = HashedPassword::new(
-        bcrypt::hash(&token_pair.refresh_token, bcrypt::DEFAULT_COST)
+        bcrypt::hash(&token_pair.refresh_token, settings.bcrypt_cost)
             .map_err(|_| AuthError::TokenGenerationFailed)?,
     )
     .map_err(|_| AuthError::TokenGenerationFailed)?;

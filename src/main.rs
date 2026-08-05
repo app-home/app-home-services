@@ -488,7 +488,7 @@ async fn seed_default_user(
         return Ok(true);
     }
 
-    let password_hash = bcrypt::hash(&settings.default_user_password, bcrypt::DEFAULT_COST)
+    let password_hash = bcrypt::hash(&settings.default_user_password, settings.bcrypt_cost)
         .map_err(|e| format!("password hashing failed: {e}"))?;
 
     let id = uuid::Uuid::now_v7();

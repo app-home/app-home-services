@@ -4,6 +4,10 @@ use shared::domain::value_objects::email::Email;
 use shared::domain::value_objects::hashed_password::HashedPassword;
 use uuid::Uuid;
 
+// Verify behavior is cost-independent, so tests hash at the minimum cost for
+// speed (mirrors the TEST_BCRYPT_COST pattern in the token-reuse tests).
+const TEST_BCRYPT_COST: u32 = 4;
+
 fn create_test_user(password_hash: Option<HashedPassword>) -> User {
     let email = Email::new("test@example.com").unwrap();
     let auth_provider = if password_hash.is_some() {
@@ -25,14 +29,14 @@ fn create_test_user(password_hash: Option<HashedPassword>) -> User {
 
 #[test]
 fn test_verify_password_correct() {
-    let hash = bcrypt::hash("correct_password", bcrypt::DEFAULT_COST).unwrap();
+    let hash = bcrypt::hash("correct_password", TEST_BCRYPT_COST).unwrap();
     let user = create_test_user(Some(HashedPassword::new(hash).unwrap()));
     assert!(user.verify_password("correct_password"));
 }
 
 #[test]
 fn test_verify_password_incorrect() {
-    let hash = bcrypt::hash("correct_password", bcrypt::DEFAULT_COST).unwrap();
+    let hash = bcrypt::hash("correct_password", TEST_BCRYPT_COST).unwrap();
     let user = create_test_user(Some(HashedPassword::new(hash).unwrap()));
     assert!(!user.verify_password("wrong_password"));
 }
@@ -45,7 +49,7 @@ fn test_verify_password_no_hash() {
 
 #[test]
 fn test_verify_password_empty_string() {
-    let hash = bcrypt::hash("", bcrypt::DEFAULT_COST).unwrap();
+    let hash = bcrypt::hash("", TEST_BCRYPT_COST).unwrap();
     let user = create_test_user(Some(HashedPassword::new(hash).unwrap()));
     assert!(user.verify_password(""));
     assert!(!user.verify_password("not_empty"));
