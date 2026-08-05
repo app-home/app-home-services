@@ -16,7 +16,13 @@ pub struct UserResponse {
     pub updated_at: String,
 }
 
-
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct UsersResponse {
+    pub items: Vec<UserResponse>,
+    pub page: u32,
+    pub per_page: u32,
+    pub total: u64,
+}
 
 #[derive(Serialize, Deserialize, ToSchema)]
 pub struct UpdateRoleRequest {

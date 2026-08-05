@@ -6,7 +6,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use admin::adapters::inbound::responses::{UpdateRoleRequest, UserResponse};
-use admin::application::ports::admin_repository::AdminRepository;
+use admin::application::ports::admin_repository::{AdminRepository, ListUsersResult};
 use admin::application::use_cases::{get_user, list_users, update_user_role};
 use admin::domain::entities::admin_user::AdminUser;
 use admin::domain::errors::AdminError;
@@ -34,10 +34,13 @@ impl MockAdminRepo {
 
 #[async_trait]
 impl AdminRepository for MockAdminRepo {
-    async fn list_users(&self) -> Result<Vec<AdminUser>, AdminError> {
+    async fn list_users(&self, page: u32, per_page: u32) -> Result<ListUsersResult, AdminError> {
         let mut users: Vec<AdminUser> = self.store.lock().unwrap().values().cloned().collect();
         users.sort_by_key(|b| std::cmp::Reverse(b.created_at()));
-        Ok(users)
+        let total = users.len() as u64;
+        let offset = (page.saturating_sub(1) * per_page) as usize;
+        let users = users.into_iter().skip(offset).take(per_page as usize).collect();
+        Ok(ListUsersResult { users, total })
     }
 
     async fn get_user(&self, user_id: Uuid) -> Result<AdminUser, AdminError> {
@@ -191,22 +194,58 @@ fn admin_error_internal_error_message() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn list_users_returns_all_users() {
+async fn list_users_returns_all_users_on_first_page() {
     let repo = MockAdminRepo::new();
     let user1 = make_admin_user(Uuid::now_v7(), Some("alice"), Role::User);
     let user2 = make_admin_user(Uuid::now_v7(), Some("bob"), Role::Admin);
     repo.seed(user1);
     repo.seed(user2);
 
-    let users = list_users::list_users(&repo).await.unwrap();
-    assert_eq!(users.len(), 2);
+    let result = list_users::list_users(&repo, 1, 100).await.unwrap();
+    assert_eq!(result.users.len(), 2);
+    assert_eq!(result.total, 2);
 }
 
 #[tokio::test]
 async fn list_users_returns_empty_when_no_users() {
     let repo = MockAdminRepo::new();
-    let users = list_users::list_users(&repo).await.unwrap();
-    assert!(users.is_empty());
+    let result = list_users::list_users(&repo, 1, 100).await.unwrap();
+    assert!(result.users.is_empty());
+    assert_eq!(result.total, 0);
+}
+
+#[tokio::test]
+async fn list_users_paginates_by_created_at_desc() {
+    let repo = MockAdminRepo::new();
+    let base = Utc::now();
+    for i in 0..5u32 {
+        let created_at = base + chrono::Duration::seconds(i64::from(i));
+        let user = AdminUser::new(
+            Uuid::now_v7(),
+            Some(format!("user-{i}")),
+            format!("user-{i}@example.com"),
+            "Display Name".to_string(),
+            Role::User,
+            "local".to_string(),
+            created_at,
+            created_at,
+        );
+        repo.seed(user);
+    }
+
+    let page1 = list_users::list_users(&repo, 1, 2).await.unwrap();
+    assert_eq!(page1.users.len(), 2);
+    assert_eq!(page1.total, 5);
+    assert_eq!(page1.users[0].username(), Some("user-4"));
+    assert_eq!(page1.users[1].username(), Some("user-3"));
+
+    let page3 = list_users::list_users(&repo, 3, 2).await.unwrap();
+    assert_eq!(page3.users.len(), 1);
+    assert_eq!(page3.users[0].username(), Some("user-0"));
+
+    let beyond = list_users::list_users(&repo, 4, 2).await.unwrap();
+    assert!(beyond.users.is_empty());
+    assert_eq!(beyond.total, 5);
 }
 
 // ---------------------------------------------------------------------------

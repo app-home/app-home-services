@@ -34,5 +34,15 @@ pub struct UserSummary {
 #[async_trait]
 pub trait UserDirectory: Send + Sync {
     async fn get_user_summary(&self, user_id: Uuid) -> Result<Option<UserSummary>, DomainError>;
-    async fn list_user_summaries(&self) -> Result<Vec<UserSummary>, DomainError>;
+    /// Lists user summaries ordered by `created_at` descending, `limit` rows at
+    /// most, skipping the first `offset` rows. Bounded so a large `users` table
+    /// can never be fully materialized in memory by a single call (see #101).
+    async fn list_user_summaries(
+        &self,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<UserSummary>, DomainError>;
+    /// Total number of users, so callers can report pagination metadata without
+    /// loading every row (see #101).
+    async fn count_users(&self) -> Result<u64, DomainError>;
 }

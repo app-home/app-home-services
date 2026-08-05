@@ -5,7 +5,7 @@ use shared::user_directory::UserDirectory;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::application::ports::admin_repository::AdminRepository;
+use crate::application::ports::admin_repository::{AdminRepository, ListUsersResult};
 use crate::domain::entities::admin_user::AdminUser;
 use crate::domain::errors::AdminError;
 use crate::domain::value_objects::role::Role;
@@ -73,12 +73,15 @@ impl PostgresAdminRepo {
 
 #[async_trait]
 impl AdminRepository for PostgresAdminRepo {
-    async fn list_users(&self) -> Result<Vec<AdminUser>, AdminError> {
-        let summaries = self
-            .user_directory
-            .list_user_summaries()
-            .await
-            .map_err(|e| AdminError::InternalError(e.to_string()))?;
+    async fn list_users(&self, page: u32, per_page: u32) -> Result<ListUsersResult, AdminError> {
+        let offset = u64::from(page.saturating_sub(1)) * u64::from(per_page);
+        let (summaries, total) = tokio::join!(
+            self.user_directory
+                .list_user_summaries(per_page, offset as u32),
+            self.user_directory.count_users(),
+        );
+        let summaries = summaries.map_err(|e| AdminError::InternalError(e.to_string()))?;
+        let total = total.map_err(|e| AdminError::InternalError(e.to_string()))?;
 
         let assigned_roles = self.all_assigned_roles().await?;
         let role_for_id = |id: Uuid| {
@@ -89,7 +92,7 @@ impl AdminRepository for PostgresAdminRepo {
                 .unwrap_or(Role::User)
         };
 
-        Ok(summaries
+        let users = summaries
             .into_iter()
             .map(|s| {
                 let role = role_for_id(s.id);
@@ -104,7 +107,9 @@ impl AdminRepository for PostgresAdminRepo {
                     s.updated_at,
                 )
             })
-            .collect())
+            .collect();
+
+        Ok(ListUsersResult { users, total })
     }
 
     async fn get_user(&self, user_id: Uuid) -> Result<AdminUser, AdminError> {
