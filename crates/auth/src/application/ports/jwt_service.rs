@@ -29,8 +29,11 @@ pub struct AccessTokenClaims {
     pub jti: Uuid,
     pub iss: String,
     pub aud: String,
-    pub exp: usize,
-    pub iat: usize,
+    /// Unix seconds. `i64` (chrono's native type) rather than `usize` so the
+    /// timestamp arithmetic has no platform-width/overflow surprises on 32-bit
+    /// targets (Y2038) or for pre-1970 values (see #95).
+    pub exp: i64,
+    pub iat: i64,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -39,8 +42,9 @@ pub struct RefreshTokenClaims {
     pub session_id: Uuid,
     pub iss: String,
     pub aud: String,
-    pub exp: usize,
-    pub iat: usize,
+    /// Unix seconds; see `AccessTokenClaims::exp` for why `i64` (see #95).
+    pub exp: i64,
+    pub iat: i64,
 }
 
 pub trait JwtService: Send + Sync {

@@ -71,7 +71,9 @@ pub struct AuthenticatedUser {
     pub jti: Uuid,
     /// `exp` claim of the presented access token (unix seconds), so the
     /// remaining lifetime (and thus the blacklist TTL) can be computed.
-    pub exp: usize,
+    /// `i64` rather than `usize` for the same platform/overflow reasons as the
+    /// claim itself (see #95).
+    pub exp: i64,
 }
 
 #[derive(Debug)]
@@ -144,7 +146,7 @@ impl<S: Send + Sync> FromRequestParts<S> for AuthenticatedUser {
         struct Claims {
             sub: Uuid,
             jti: Uuid,
-            exp: usize,
+            exp: i64,
         }
 
         let Some(claims) = verification.decode::<Claims>(&token) else {

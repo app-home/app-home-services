@@ -38,14 +38,14 @@ impl JwtServiceImpl {
 
 impl JwtService for JwtServiceImpl {
     fn generate_token_pair(&self, user_id: Uuid, session_id: Uuid) -> Result<TokenPair, AuthError> {
-        let now = Utc::now().timestamp() as usize;
+        let now = Utc::now().timestamp();
 
         let access_claims = AccessTokenClaims {
             sub: user_id,
             jti: Uuid::now_v7(),
             iss: self.verification.issuer.clone(),
             aud: self.verification.audience.clone(),
-            exp: now + (self.access_expiry_minutes as usize * 60),
+            exp: now + (self.access_expiry_minutes * 60),
             iat: now,
         };
 
@@ -54,7 +54,7 @@ impl JwtService for JwtServiceImpl {
             session_id,
             iss: self.verification.issuer.clone(),
             aud: self.verification.audience.clone(),
-            exp: now + (self.refresh_expiry_days as usize * 86400),
+            exp: now + (self.refresh_expiry_days * 86400),
             iat: now,
         };
 
