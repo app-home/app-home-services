@@ -5,7 +5,7 @@ use shared::user_directory::UserDirectory;
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::application::ports::admin_repository::AdminRepository;
+use crate::application::ports::admin_repository::{AdminRepository, ListUsersResult};
 use crate::domain::entities::admin_user::AdminUser;
 use crate::domain::errors::AdminError;
 use crate::domain::value_objects::role::Role;
@@ -37,13 +37,12 @@ impl PostgresAdminRepo {
     /// `DEFAULT 'user'` behavior the old `users.role` column had, so a user with no
     /// row here behaves exactly as one with an explicit `role = 'user'` row would.
     async fn role_for(&self, user_id: Uuid) -> Result<Role, AdminError> {
-        let role_str = sqlx::query_scalar::<_, String>(
-            "SELECT role FROM user_roles WHERE user_id = $1",
-        )
-        .bind(user_id)
-        .fetch_optional(&self.pool)
-        .await
-        .map_err(|e| AdminError::InternalError(e.to_string()))?;
+        let role_str =
+            sqlx::query_scalar::<_, String>("SELECT role FROM user_roles WHERE user_id = $1")
+                .bind(user_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AdminError::InternalError(e.to_string()))?;
 
         match role_str {
             Some(s) => Role::try_from(s.as_str()).map_err(AdminError::InternalError),
@@ -73,12 +72,14 @@ impl PostgresAdminRepo {
 
 #[async_trait]
 impl AdminRepository for PostgresAdminRepo {
-    async fn list_users(&self) -> Result<Vec<AdminUser>, AdminError> {
-        let summaries = self
-            .user_directory
-            .list_user_summaries()
-            .await
-            .map_err(|e| AdminError::InternalError(e.to_string()))?;
+    async fn list_users(&self, page: u32, per_page: u32) -> Result<ListUsersResult, AdminError> {
+        let offset = u64::from(page.saturating_sub(1)) * u64::from(per_page);
+        let (summaries, total) = tokio::join!(
+            self.user_directory.list_user_summaries(per_page, offset),
+            self.user_directory.count_users(),
+        );
+        let summaries = summaries.map_err(|e| AdminError::InternalError(e.to_string()))?;
+        let total = total.map_err(|e| AdminError::InternalError(e.to_string()))?;
 
         let assigned_roles = self.all_assigned_roles().await?;
         let role_for_id = |id: Uuid| {
@@ -89,7 +90,7 @@ impl AdminRepository for PostgresAdminRepo {
                 .unwrap_or(Role::User)
         };
 
-        Ok(summaries
+        let users = summaries
             .into_iter()
             .map(|s| {
                 let role = role_for_id(s.id);
@@ -104,7 +105,9 @@ impl AdminRepository for PostgresAdminRepo {
                     s.updated_at,
                 )
             })
-            .collect())
+            .collect();
+
+        Ok(ListUsersResult { users, total })
     }
 
     async fn get_user(&self, user_id: Uuid) -> Result<AdminUser, AdminError> {
