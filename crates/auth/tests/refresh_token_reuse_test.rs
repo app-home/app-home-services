@@ -358,11 +358,23 @@ async fn legitimate_refresh_of_an_active_session_does_not_touch_other_sessions()
     };
     let settings = test_settings();
 
-    let result = refresh_token(&user_repo, &jwt_service, real_refresh_token, &settings).await;
+    let result = refresh_token(&user_repo, &jwt_service, real_refresh_token, &settings)
+        .await
+        .expect("expected a successful refresh");
 
+    let rotated = session_repo
+        .find_by_id(result.session_id)
+        .await
+        .unwrap()
+        .expect("rotated session should exist");
+    let expected_cost_prefix = format!("$2b${TEST_BCRYPT_COST:02}$");
     assert!(
-        result.is_ok(),
-        "expected a successful refresh, got {result:?}"
+        rotated
+            .refresh_token_hash()
+            .as_ref()
+            .starts_with(&expected_cost_prefix),
+        "the rotated refresh-token hash must be hashed at TEST_BCRYPT_COST, got: {}",
+        rotated.refresh_token_hash().as_ref()
     );
 
     let remaining_active = session_repo.find_active_by_user_id(user_id).await.unwrap();

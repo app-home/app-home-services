@@ -86,13 +86,17 @@ password hashing while OWASP recommends 12-14 on modern hardware. Resolution
   +0.5s/hash, still well within a normal CI budget. Low costs are only used in
   direct unit tests (`TEST_BCRYPT_COST = 4`), which never go through `from_env`.
 
-## Validation (all green)
+## Validation
 
 - `cargo build --locked`, `cargo clippy --locked --workspace --all-targets`,
   `cargo fmt --all --check` (touched files only; the repo has pre-existing fmt
-  churn outside this PR), `cargo test --locked --workspace`.
-- `scripts/test-with-podman.ps1 -IntegrationOnly`: 53/53 integration tests on
-  the plain-HTTP path at the default cost.
+  churn outside this PR), `cargo test --locked --workspace` -- all green.
+- `scripts/test-with-podman.ps1 -IntegrationOnly`: 52/53 passed. The single
+  failure (`redis_connection_failure_shadow_still_enforces_the_per_ip_budget`)
+  was environmental: its `podman run` for a disposable Redis failed once mid-run
+  (passes 3/3 in isolation; the acknowledged free-port race in
+  `tests/integration/redis_connection_failure_test.rs`). Unrelated to this
+  change -- that test only exercises `RedisRateLimiter` with a synthetic IP.
 - Startup fail-fast smoke: `BCRYPT_COST=11` → startup aborts before DB pool
   creation; `BCRYPT_COST=12`/unset → default 12.
 

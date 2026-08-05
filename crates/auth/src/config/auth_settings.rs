@@ -9,7 +9,13 @@ const MIN_UNIQUE_CHARS: usize = 8;
 /// startup error; higher is allowed up to bcrypt's max (31) for slower
 /// hardware-limited tuning.
 pub const DEFAULT_BCRYPT_COST: u32 = 12;
+
+/// Minimum permitted bcrypt cost (the OWASP floor). Anything below this is a
+/// fatal startup error via `validate_bcrypt_cost`.
 pub const MIN_BCRYPT_COST: u32 = 12;
+
+/// Maximum permitted bcrypt cost (bcrypt's own limit). Costs above this are
+/// rejected because bcrypt would refuse to hash at them anyway.
 pub const MAX_BCRYPT_COST: u32 = 31;
 
 /// Validates `BCRYPT_COST`. Returning `Err` here is a fatal startup error (see
@@ -20,12 +26,20 @@ pub const MAX_BCRYPT_COST: u32 = 31;
 pub fn validate_bcrypt_cost(cost: u32) -> Result<(), String> {
     if cost < MIN_BCRYPT_COST {
         return Err(format!(
-            "BCRYPT_COST must be at least {MIN_BCRYPT_COST} (OWASP minimum for new applications); got {cost}"
+            concat!(
+                "BCRYPT_COST must be at least {} ",
+                "(OWASP minimum for new applications); got {}"
+            ),
+            MIN_BCRYPT_COST, cost
         ));
     }
     if cost > MAX_BCRYPT_COST {
         return Err(format!(
-            "BCRYPT_COST must be at most {MAX_BCRYPT_COST} (bcrypt's maximum); got {cost}"
+            concat!(
+                "BCRYPT_COST must be at most {} ",
+                "(bcrypt's maximum); got {}"
+            ),
+            MAX_BCRYPT_COST, cost
         ));
     }
     Ok(())
@@ -240,10 +254,15 @@ impl AuthSettings {
                 .parse()
                 .map_err(|_| "REFRESH_TOKEN_EXPIRY_DAYS must be a valid number".to_string())?,
             bcrypt_cost: {
-                let cost = std::env::var("BCRYPT_COST")
-                    .unwrap_or_else(|_| DEFAULT_BCRYPT_COST.to_string())
-                    .parse()
-                    .map_err(|_| "BCRYPT_COST must be a valid number".to_string())?;
+                let cost = match std::env::var("BCRYPT_COST") {
+                    Ok(value) => value
+                        .parse()
+                        .map_err(|_| "BCRYPT_COST must be a valid number".to_string())?,
+                    Err(std::env::VarError::NotPresent) => DEFAULT_BCRYPT_COST,
+                    Err(std::env::VarError::NotUnicode(_)) => {
+                        return Err("BCRYPT_COST must be valid Unicode".to_string());
+                    }
+                };
                 validate_bcrypt_cost(cost)?;
                 cost
             },
@@ -334,5 +353,42 @@ mod tests {
             result.is_err(),
             "a cost above bcrypt's maximum must be rejected, got {result:?}"
         );
+    }
+
+    // Environment tests below mutate process-wide env vars, so they serialize on
+    // this mutex (other tests in this crate never read these vars).
+    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn set_valid_auth_env() {
+        // SAFETY: guarded by ENV_MUTEX; no concurrent reads of these vars in tests.
+        unsafe {
+            std::env::set_var("DEFAULT_USER_PASSWORD", "Test-Password-9!");
+            std::env::set_var("JWT_SECRET", "0123456789abcdef0123456789abcdef01234567");
+        }
+    }
+
+    #[test]
+    fn from_env_defaults_bcrypt_cost_when_unset() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        set_valid_auth_env();
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::remove_var("BCRYPT_COST") };
+        let settings = AuthSettings::from_env().expect("a valid env should load");
+        assert_eq!(settings.bcrypt_cost, DEFAULT_BCRYPT_COST);
+    }
+
+    #[test]
+    fn from_env_rejects_a_non_numeric_bcrypt_cost() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        set_valid_auth_env();
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::set_var("BCRYPT_COST", "not-a-number") };
+        let result = AuthSettings::from_env();
+        assert!(
+            result.is_err(),
+            "a non-numeric BCRYPT_COST must be rejected, got {result:?}"
+        );
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::remove_var("BCRYPT_COST") };
     }
 }
