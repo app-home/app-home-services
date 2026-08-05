@@ -113,6 +113,8 @@ async fn main() {
         );
     }
 
+    spawn_db_pool_metrics_poller(pool.clone());
+
     let user_repo = PostgresUserRepo::new(pool.clone());
     let session_repo = PostgresSessionRepo::new(pool.clone());
     // Coerced to `Arc<dyn ...>` so the Extension key matches what the profile and
@@ -365,6 +367,30 @@ async fn main() {
             axum::serve(listener, service).await.expect("Server error");
         }
     }
+}
+
+/// Spawns a background task that, every 15 seconds, reads the shared Postgres
+/// pool's current size/idle-connection counts and publishes them as
+/// `db_pool_size` and `db_pool_idle` gauges to the installed Prometheus recorder
+/// (see #100).
+///
+/// `PgPool::size`/`num_idle` are cheap, synchronous, in-memory reads (no query
+/// against the database), so polling them costs nothing beyond the interval
+/// tick itself. `db_pool_size - db_pool_idle` is the number of connections
+/// currently checked out; that approaching `DB_MAX_CONNECTIONS` is the signal
+/// for pool exhaustion this metric exists to make visible (previously there was
+/// none -- a caller could only infer trouble indirectly, e.g. via
+/// `DB_ACQUIRE_TIMEOUT_SECONDS` errors after the fact).
+fn spawn_db_pool_metrics_poller(pool: sqlx::PgPool) {
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(15));
+        loop {
+            interval.tick().await;
+
+            metrics::gauge!("db_pool_size").set(pool.size() as f64);
+            metrics::gauge!("db_pool_idle").set(pool.num_idle() as f64);
+        }
+    });
 }
 
 /// Spawns a background task that, every 15 seconds, reads each rate limiter's Redis
