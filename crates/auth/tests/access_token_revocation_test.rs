@@ -162,7 +162,7 @@ async fn extractor_rejects_expired_token() {
     // expired would sit right on that boundary and could pass or fail
     // depending on the exact instant `now` is captured vs. when `decode` runs.
     // 120s clears the leeway with margin.
-    let now = chrono::Utc::now().timestamp() as usize;
+    let now = chrono::Utc::now().timestamp();
     let claims = serde_json::json!({
         "sub": Uuid::now_v7(),
         "jti": Uuid::now_v7(),

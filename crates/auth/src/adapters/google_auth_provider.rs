@@ -217,8 +217,10 @@ pub struct GoogleClaims {
     pub name: Option<String>,
     pub iss: String,
     pub aud: String,
-    pub exp: usize,
-    pub iat: usize,
+    /// Unix seconds; `i64` for the same platform/overflow reasons as the app's
+    /// own JWT claims (see #95).
+    pub exp: i64,
+    pub iat: i64,
 }
 
 #[cfg(test)]

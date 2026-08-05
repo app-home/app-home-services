@@ -60,8 +60,7 @@ pub async fn logout_handler(
             // silently drops -- the revocation. revoke() only surfaces an error
             // when Redis AND Postgres are both down at once, in which case the
             // token stays valid until its natural expiry (logged at error level).
-            let ttl_secs =
-                revocation_ttl_secs(auth_user.exp, chrono::Utc::now().timestamp() as usize);
+            let ttl_secs = revocation_ttl_secs(auth_user.exp, chrono::Utc::now().timestamp());
             match blacklist.revoke(auth_user.jti, ttl_secs).await {
                 Ok(()) => {
                     tracing::info!(
@@ -119,9 +118,10 @@ pub async fn logout_handler(
 
 /// Remaining lifetime of an access token, in whole seconds, used as the
 /// revocation list TTL so the entry lives exactly as long as the token would
-/// have. `now` is taken as a parameter for testability.
-fn revocation_ttl_secs(exp: usize, now: usize) -> u64 {
-    exp.saturating_sub(now) as u64
+/// have. `now` is taken as a parameter for testability. Timestamps are `i64`
+/// (see #95).
+fn revocation_ttl_secs(exp: i64, now: i64) -> u64 {
+    exp.saturating_sub(now).max(0) as u64
 }
 
 #[cfg(test)]
