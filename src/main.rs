@@ -50,6 +50,14 @@ async fn main() {
     dotenvy::dotenv().ok();
     app_home_services::infrastructure::telemetry::logging::init_logging();
 
+    // rustls 0.23 only auto-selects a crypto provider when exactly one of
+    // aws-lc-rs/ring is compiled in; this graph has both (aws-lc-rs via
+    // axum-server/sqlx, ring via reqwest's hyper-rustls), so the provider must
+    // be installed explicitly or any rustls handshake panics (see #93). Do it
+    // first thing, before sqlx or native TLS touch it.
+    rustls::crypto::CryptoProvider::install_default(rustls::crypto::aws_lc_rs::default_provider())
+        .expect("Failed to install default rustls crypto provider");
+
     tracing::info!("Starting App Home Services");
 
     // Installed once, up front, before anything below records a metric -- the
@@ -191,6 +199,17 @@ async fn main() {
 
     let addr = format!("{}:{}", settings.server_host, settings.server_port);
 
+    // Resolve SERVER_HOST:SERVER_PORT to a concrete SocketAddr exactly once, so
+    // the plain-HTTP and native-TLS branches share the same hostname-resolution
+    // contract: both accept a name like "localhost" or an IP literal. (The TLS
+    // branch binds via axum-server, which needs a SocketAddr -- parsing the
+    // string there would panic on non-IP hostnames.)
+    let bind_addr = tokio::net::lookup_host(&addr)
+        .await
+        .expect("Failed to resolve bind address")
+        .next()
+        .expect("Failed to resolve bind address: no addresses resolved");
+
     let health_check_pool = pool.clone();
 
     let metrics_guard_config = MetricsGuardConfig {
@@ -286,48 +305,66 @@ async fn main() {
             .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
     }
 
-    // HTTP security headers (see #90). Emitted unconditionally on every response:
-    // HSTS is inert over plain HTTP (browsers only process it on HTTPS responses),
-    // so it is safe to send even when TLS is terminated by a reverse proxy ahead
-    // of this service. CSP is deliberately NOT set: this service renders no HTML
-    // except the Swagger UI when ENABLE_SWAGGER=true (which relies on inline
-    // scripts/CDN assets), so a strict CSP would break it without adding value.
-    let app = app
+    // HTTP security headers (see #90) -- see
+    // `security_headers::apply_security_headers` for why each is set and why
+    // HSTS is emitted unconditionally.
+    let app = app_home_services::security_headers::apply_security_headers(app)
         .layer(cors)
-        .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
-            axum::http::header::STRICT_TRANSPORT_SECURITY,
-            axum::http::HeaderValue::from_static("max-age=31536000; includeSubDomains"),
-        ))
-        .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
-            axum::http::header::X_CONTENT_TYPE_OPTIONS,
-            axum::http::HeaderValue::from_static("nosniff"),
-        ))
-        .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
-            axum::http::header::X_FRAME_OPTIONS,
-            axum::http::HeaderValue::from_static("DENY"),
-        ))
-        .layer(tower_http::set_header::SetResponseHeaderLayer::overriding(
-            axum::http::header::REFERRER_POLICY,
-            axum::http::HeaderValue::from_static("strict-origin-when-cross-origin"),
-        ))
         .with_state(state);
 
     tracing::info!(address = %addr, "Listening");
 
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .expect("Failed to bind address");
+    // Native TLS (see #93): when both TLS_CERT_PATH and TLS_KEY_PATH are set,
+    // terminate HTTPS here via rustls instead of relying on a reverse proxy.
+    // `Settings::from_env` already guarantees the pair is either both set or
+    // both unset. The PEM files are loaded up front so a missing or malformed
+    // certificate fails startup loudly, not at the first handshake.
+    let tls_config = match (&settings.tls_cert_path, &settings.tls_key_path) {
+        (Some(cert_path), Some(key_path)) => {
+            tracing::info!(cert_path = %cert_path, "Native TLS enabled (rustls)");
+            Some(
+                axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
+                    .await
+                    .unwrap_or_else(|e| {
+                        panic!("Failed to load TLS certificate/key from {cert_path}: {e}")
+                    }),
+            )
+        }
+        (None, None) => {
+            tracing::info!(
+                "Native TLS disabled: TLS termination is expected from a reverse proxy in front of this service"
+            );
+            None
+        }
+        _ => unreachable!("Settings::from_env enforces TLS_CERT_PATH/TLS_KEY_PATH together"),
+    };
 
     // `into_make_service_with_connect_info` exposes the real TCP peer address to
     // extractors (`ConnectInfo<SocketAddr>`), which the login and refresh handlers use
     // to safely resolve the client IP for rate limiting (see `resolve_client_ip`), and
     // which the `/metrics` IP allowlist guard uses the same way.
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .await
-    .expect("Server error");
+    let service = app.into_make_service_with_connect_info::<SocketAddr>();
+
+    match tls_config {
+        // axum-server binds via tokio internally (converting a pre-bound
+        // std::net::TcpListener stalls connection handling on some platforms),
+        // and hands each connection's peer `SocketAddr` to the make service,
+        // which axum's `Connected<SocketAddr>` impl (see
+        // axum::extract::connect_info) turns into the same `ConnectInfo<SocketAddr>`
+        // extension the plain path provides.
+        Some(tls) => {
+            axum_server::bind_rustls(bind_addr, tls)
+                .serve(service)
+                .await
+                .expect("Server error");
+        }
+        None => {
+            let listener = tokio::net::TcpListener::bind(bind_addr)
+                .await
+                .expect("Failed to bind address");
+            axum::serve(listener, service).await.expect("Server error");
+        }
+    }
 }
 
 /// Spawns a background task that, every 15 seconds, reads each rate limiter's Redis

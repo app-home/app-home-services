@@ -17,6 +17,12 @@ profiles = { path = "crates/profiles", version = "0.1" }
 admin = { path = "crates/admin", version = "0.1" }
 
 axum = "0.8"
+axum-server = { version = "0.8", features = ["tls-rustls"] }
+# rustls 0.23 no longer auto-selects a crypto provider when more than one is
+# compiled in (aws-lc-rs via axum-server/sqlx + ring via reqwest's hyper-rustls),
+# so it is installed explicitly in main.rs. aws-lc-rs matches what axum-server's
+# tls-rustls feature uses.
+rustls = { version = "0.23", features = ["aws-lc-rs"] }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.9", features = ["postgres", "uuid", "runtime-tokio", "tls-rustls", "chrono", "migrate"] }
 bcrypt = "0.19"
@@ -41,3 +47,6 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 [dev-dependencies]
 tokio-test = "0.4"
 async-trait = "0.1"
+# Self-signed cert generation for the native-TLS smoke test (tests run offline,
+# no openssl dependency on any platform).
+rcgen = "0.13"

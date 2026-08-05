@@ -47,6 +47,8 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `DB_REQUIRE_SSL` | No | `false` | Force the database connection to use `sslmode=verify-full`, replacing any `sslmode` in `DATABASE_URL`. For environments that demand an encrypted, certificate-verified Postgres connection (e.g. production). |
 | `SERVER_HOST` | No | `127.0.0.1` | HTTP server bind host. **Set to `0.0.0.0` when running in a container** (see Container Image below) or anywhere else the process needs to accept connections from outside its own host -- `127.0.0.1` only accepts local connections. |
 | `SERVER_PORT` | No | `3000` | HTTP server bind port |
+| `TLS_CERT_PATH` | No | — | Path to a PEM-encoded TLS certificate chain. Must be set **together with** `TLS_KEY_PATH`; setting only one aborts startup. When both are set the service terminates HTTPS itself (native TLS via rustls, see HTTPS / TLS below). Empty = plain HTTP. |
+| `TLS_KEY_PATH` | No | — | Path to the PEM-encoded private key matching `TLS_CERT_PATH`. Must be set **together with** `TLS_CERT_PATH`; setting only one aborts startup. |
 | `DEFAULT_USER_USERNAME` | No | `admin` | Default local user username |
 | `DEFAULT_USER_PASSWORD` | Yes | — | Default local user password. Must be at least 12 characters, contain at least 3 of {lowercase, uppercase, digits, symbols}, and not be a known weak/placeholder password (e.g. `admin123`) -- the service refuses to start otherwise. Under 16 characters is accepted but logged as a startup warning. |
 | `DEFAULT_USER_EMAIL` | No | `admin@example.com` | Default local user email |
@@ -64,6 +66,15 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `TRUSTED_PROXY_IPS` | No | — | Comma-separated reverse proxy IPs trusted to set X-Forwarded-For/X-Real-IP; empty = never trusted |
 | `METRICS_ALLOWED_IPS` | No | — | Comma-separated IPs allowed to reach `GET /metrics` (e.g. your Prometheus server); empty = no restriction. Loopback is always allowed regardless. See Metrics & Alerting below. |
 | `ENABLE_SWAGGER` | No | `false` | Serve Swagger UI and the OpenAPI spec at `/swagger-ui` and `/api-docs/openapi.json`. Disabled by default so a publicly reachable instance exposes no API surface; set to `true` for local development. See API Documentation below. |
+
+## HTTPS / TLS
+
+This service expects to be served over HTTPS in production. Two mutually exclusive options exist:
+
+1. **Reverse proxy (default)** — deploy behind a TLS-terminating reverse proxy (Caddy, nginx, Traefik, a cloud load balancer, ...). The service binds plain HTTP on `SERVER_HOST:SERVER_PORT` and the proxy forwards to it. Configure `TRUSTED_PROXY_IPS` so client IP resolution and rate limiting use the real peer address.
+2. **Native TLS** — set both `TLS_CERT_PATH` and `TLS_KEY_PATH` (PEM files). The service then terminates HTTPS itself via rustls and you can point clients at it directly; no reverse proxy is needed for encryption. Only one of the two paths is a startup error, so a half-configured deployment can never silently serve plaintext while the operator believes HTTPS is on.
+
+The `Strict-Transport-Security` (HSTS) header is sent on every response (see #90). Browsers only honor it when received over a real HTTPS connection, regardless of whether TLS terminates at this service or at the reverse proxy, so it is harmless in the reverse-proxy plain-HTTP setup (the proxy forwards the header to the client over HTTPS, where it takes effect) and effective in the native-TLS one. If you terminate TLS with your own certificate (e.g. a self-signed one for testing), clients must trust it explicitly or use `curl -k` / equivalent.
 
 ## API Endpoints
 

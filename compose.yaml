@@ -35,7 +35,7 @@ services:
       DATABASE_URL: postgres://app_home:app_home_test@postgres/app_home_test
       REDIS_URL: redis://redis:6379
       JWT_SECRET: test-secret-key-for-podman-test-environment
-      DEFAULT_USER_PASSWORD: test-password
+      DEFAULT_USER_PASSWORD: Test-Password-9!
       RUST_LOG: info
     depends_on:
       postgres:
