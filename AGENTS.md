@@ -1,9 +1,9 @@
 <!-- SPECKIT START -->
-The current implementation plan is at `specs/012-native-tls/plan.md`.
+The current implementation plan is at `specs/013-bcrypt-cost/plan.md`.
 Read it for context about technologies, project structure, and the
-implementation approach for optional native TLS support (reverse proxy
-documentation + rustls termination via `TLS_CERT_PATH`/`TLS_KEY_PATH`,
-issue #93).
+implementation approach for raising bcrypt cost to 12 (OWASP) via a
+centralized `DEFAULT_BCRYPT_COST` constant plus an env-configurable,
+fail-fast-validated `BCRYPT_COST` override, issue #94.
 <!-- SPECKIT END -->
 
 ## Project State (auto-updated by opencode)
