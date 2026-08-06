@@ -25,7 +25,15 @@ impl PostgresUserRepo {
         Self { pool }
     }
 
-    async fn load_aggregate_with_tx(&self, user: User) -> Result<UserAggregate, AuthError> {
+    /// Loads `user`'s sessions and combines them into a `UserAggregate`.
+    ///
+    /// A single `SELECT` against the pool -- no transaction, despite this method's
+    /// former name (`load_aggregate_with_tx`, see #103). One read query has nothing
+    /// for a transaction to make atomic; the aggregate is assembled here in memory
+    /// from whatever session rows exist at the moment of the query; a session
+    /// created or deleted concurrently may or may not be reflected, the same as any
+    /// other single-query read.
+    async fn load_aggregate(&self, user: User) -> Result<UserAggregate, AuthError> {
         let rows = sqlx::query_as::<_, SessionRow>(
             r#"SELECT id, user_id, refresh_token_hash, expires_at, is_active, created_at, auth_method
             FROM sessions
@@ -133,7 +141,7 @@ impl UserRepository for PostgresUserRepo {
     async fn find_aggregate_by_id(&self, id: Uuid) -> Result<Option<UserAggregate>, AuthError> {
         let user_opt = self.find_by_id(id).await?;
         match user_opt {
-            Some(user) => self.load_aggregate_with_tx(user).await.map(Some),
+            Some(user) => self.load_aggregate(user).await.map(Some),
             None => Ok(None),
         }
     }
@@ -144,7 +152,7 @@ impl UserRepository for PostgresUserRepo {
     ) -> Result<Option<UserAggregate>, AuthError> {
         let user_opt = self.find_by_username(username).await?;
         match user_opt {
-            Some(user) => self.load_aggregate_with_tx(user).await.map(Some),
+            Some(user) => self.load_aggregate(user).await.map(Some),
             None => Ok(None),
         }
     }
@@ -155,7 +163,7 @@ impl UserRepository for PostgresUserRepo {
     ) -> Result<Option<UserAggregate>, AuthError> {
         let user_opt = self.find_by_email(email).await?;
         match user_opt {
-            Some(user) => self.load_aggregate_with_tx(user).await.map(Some),
+            Some(user) => self.load_aggregate(user).await.map(Some),
             None => Ok(None),
         }
     }
