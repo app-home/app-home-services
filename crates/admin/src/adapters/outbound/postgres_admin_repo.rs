@@ -62,7 +62,10 @@ impl PostgresAdminRepo {
     /// #102). A user with no row here (never promoted) is simply absent from the
     /// returned map -- callers should default to `Role::User` for any user_id not
     /// present.
-    async fn assigned_roles_for(&self, user_ids: &[Uuid]) -> Result<HashMap<Uuid, Role>, AdminError> {
+    async fn assigned_roles_for(
+        &self,
+        user_ids: &[Uuid],
+    ) -> Result<HashMap<Uuid, Role>, AdminError> {
         if user_ids.is_empty() {
             return Ok(HashMap::new());
         }
