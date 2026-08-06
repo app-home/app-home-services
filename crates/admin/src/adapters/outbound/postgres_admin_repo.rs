@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
@@ -50,15 +51,29 @@ impl PostgresAdminRepo {
         }
     }
 
-    /// Looks up every explicitly-assigned role in one query, returned as
-    /// `(user_id, Role)` pairs. Used by `list_users` to avoid one `role_for` query
-    /// per user. Users with no row here (never promoted) are simply absent from the
-    /// result -- callers should default to `Role::User` for any user_id not present.
-    async fn all_assigned_roles(&self) -> Result<Vec<(Uuid, Role)>, AdminError> {
-        let rows = sqlx::query_as::<_, (Uuid, String)>("SELECT user_id, role FROM user_roles")
-            .fetch_all(&self.pool)
-            .await
-            .map_err(|e| AdminError::InternalError(e.to_string()))?;
+    /// Looks up every explicitly-assigned role for the given `user_ids` in one
+    /// query, returned as a `user_id -> Role` map. Used by `list_users` to avoid
+    /// one `role_for` query per user on the page.
+    ///
+    /// Bounded to `user_ids` (typically the current page's worth of users, at most
+    /// `MAX_PAGE_SIZE`) rather than scanning the whole `user_roles` table -- a plain
+    /// `SELECT user_id, role FROM user_roles` with no `WHERE`/`LIMIT` would grow
+    /// unbounded with the table regardless of how small the requested page is (see
+    /// #102). A user with no row here (never promoted) is simply absent from the
+    /// returned map -- callers should default to `Role::User` for any user_id not
+    /// present.
+    async fn assigned_roles_for(&self, user_ids: &[Uuid]) -> Result<HashMap<Uuid, Role>, AdminError> {
+        if user_ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let rows = sqlx::query_as::<_, (Uuid, String)>(
+            "SELECT user_id, role FROM user_roles WHERE user_id = ANY($1)",
+        )
+        .bind(user_ids)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AdminError::InternalError(e.to_string()))?;
 
         rows.into_iter()
             .map(|(user_id, role_str)| {
@@ -81,19 +96,15 @@ impl AdminRepository for PostgresAdminRepo {
         let summaries = summaries.map_err(|e| AdminError::InternalError(e.to_string()))?;
         let total = total.map_err(|e| AdminError::InternalError(e.to_string()))?;
 
-        let assigned_roles = self.all_assigned_roles().await?;
-        let role_for_id = |id: Uuid| {
-            assigned_roles
-                .iter()
-                .find(|(uid, _)| *uid == id)
-                .map(|(_, role)| role.clone())
-                .unwrap_or(Role::User)
-        };
+        // Only look up roles for the users actually on this page -- see
+        // assigned_roles_for's docs (#102).
+        let user_ids: Vec<Uuid> = summaries.iter().map(|s| s.id).collect();
+        let assigned_roles = self.assigned_roles_for(&user_ids).await?;
 
         let users = summaries
             .into_iter()
             .map(|s| {
-                let role = role_for_id(s.id);
+                let role = assigned_roles.get(&s.id).cloned().unwrap_or(Role::User);
                 AdminUser::new(
                     s.id,
                     s.username,
