@@ -1,7 +1,7 @@
 // Integration tests for rate limiting.
 // These tests require a running PostgreSQL database and the server to be started.
 //
-// To run: cargo test --test integration -- --ignored
+// To run: cargo test -- --ignored
 //
 // Prerequisites:
 // - Set DATABASE_URL environment variable

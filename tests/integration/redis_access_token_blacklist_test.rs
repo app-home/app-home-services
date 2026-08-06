@@ -9,7 +9,7 @@
 // Those two additionally require Postgres (DATABASE_URL + migrations, including
 // the 009 outbox table).
 //
-// To run: cargo test --test integration -- --ignored redis_access_token_blacklist
+// To run: cargo test -- --ignored redis_access_token_blacklist
 //
 // Prerequisites:
 // - `podman` (or an aliased `docker`) available on PATH and able to pull/run
