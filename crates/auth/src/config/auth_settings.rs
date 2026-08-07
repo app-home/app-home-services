@@ -1,6 +1,8 @@
 use std::collections::HashSet;
 use std::fmt;
 
+use crate::domain::services::bcrypt_task::{BcryptLimiter, DEFAULT_BCRYPT_MAX_CONCURRENT};
+
 pub const MIN_JWT_SECRET_LEN: usize = 32;
 
 const MIN_UNIQUE_CHARS: usize = 8;
@@ -41,6 +43,19 @@ pub fn validate_bcrypt_cost(cost: u32) -> Result<(), String> {
             ),
             MAX_BCRYPT_COST, cost
         ));
+    }
+    Ok(())
+}
+
+/// Validates `BCRYPT_MAX_CONCURRENT` (see #175). `0` is rejected rather than
+/// silently clamped: `BcryptLimiter::new` itself clamps to 1 defensively, but a
+/// literal `0` in the environment is almost certainly a misconfiguration
+/// (deliberately halting all login/refresh/seed work is not a real use case),
+/// so it fails startup loudly instead of silently becoming a working-but-wrong
+/// value of 1.
+pub fn validate_bcrypt_max_concurrent(value: usize) -> Result<(), String> {
+    if value == 0 {
+        return Err("BCRYPT_MAX_CONCURRENT must be at least 1".to_string());
     }
     Ok(())
 }
@@ -183,6 +198,20 @@ pub struct AuthSettings {
     /// (`BCRYPT_COST`, default `DEFAULT_BCRYPT_COST` = 12) with a fail-fast
     /// floor of 12. See #94.
     pub bcrypt_cost: u32,
+    /// Process-wide cap on concurrent bcrypt hash/verify operations (see
+    /// `bcrypt_limiter`). Env-configurable (`BCRYPT_MAX_CONCURRENT`, default
+    /// `DEFAULT_BCRYPT_MAX_CONCURRENT`). Stored alongside `bcrypt_limiter`
+    /// (rather than only inside it) purely so it's cheap to read back for
+    /// logging/`Debug` -- `BcryptLimiter` itself doesn't expose its configured
+    /// limit.
+    pub bcrypt_max_concurrent: usize,
+    /// Shared handle every bcrypt hash/verify call in production code should go
+    /// through (`bcrypt_limiter.run_bounded(...)`), instead of calling `bcrypt`
+    /// directly on whatever thread happens to be running -- see #175 and
+    /// `BcryptLimiter`'s own docs. Cloning `AuthSettings` clones this cheaply
+    /// (an `Arc` clone internally) while every clone still enforces the same
+    /// one process-wide limit together.
+    pub bcrypt_limiter: BcryptLimiter,
 }
 
 impl fmt::Debug for AuthSettings {
@@ -207,12 +236,24 @@ impl fmt::Debug for AuthSettings {
             )
             .field("refresh_token_expiry_days", &self.refresh_token_expiry_days)
             .field("bcrypt_cost", &self.bcrypt_cost)
+            .field("bcrypt_max_concurrent", &self.bcrypt_max_concurrent)
             .finish()
     }
 }
 
 impl AuthSettings {
     pub fn from_env() -> Result<Self, String> {
+        let bcrypt_max_concurrent = match std::env::var("BCRYPT_MAX_CONCURRENT") {
+            Ok(value) => value
+                .parse()
+                .map_err(|_| "BCRYPT_MAX_CONCURRENT must be a valid number".to_string())?,
+            Err(std::env::VarError::NotPresent) => DEFAULT_BCRYPT_MAX_CONCURRENT,
+            Err(std::env::VarError::NotUnicode(_)) => {
+                return Err("BCRYPT_MAX_CONCURRENT must be valid Unicode".to_string());
+            }
+        };
+        validate_bcrypt_max_concurrent(bcrypt_max_concurrent)?;
+
         Ok(Self {
             default_user_username: std::env::var("DEFAULT_USER_USERNAME")
                 .unwrap_or_else(|_| "admin".to_string()),
@@ -266,6 +307,8 @@ impl AuthSettings {
                 validate_bcrypt_cost(cost)?;
                 cost
             },
+            bcrypt_max_concurrent,
+            bcrypt_limiter: BcryptLimiter::new(bcrypt_max_concurrent),
         })
     }
 }
@@ -355,6 +398,21 @@ mod tests {
         );
     }
 
+    #[test]
+    fn accepts_the_default_bcrypt_max_concurrent() {
+        assert!(validate_bcrypt_max_concurrent(DEFAULT_BCRYPT_MAX_CONCURRENT).is_ok());
+        assert!(validate_bcrypt_max_concurrent(1).is_ok());
+    }
+
+    #[test]
+    fn rejects_a_zero_bcrypt_max_concurrent() {
+        let result = validate_bcrypt_max_concurrent(0);
+        assert!(
+            result.is_err(),
+            "BCRYPT_MAX_CONCURRENT=0 must be a startup error, got {result:?}"
+        );
+    }
+
     // Environment tests below mutate process-wide env vars, so they serialize on
     // this mutex (other tests in this crate never read these vars).
     static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -390,5 +448,45 @@ mod tests {
         );
         // SAFETY: guarded by ENV_MUTEX.
         unsafe { std::env::remove_var("BCRYPT_COST") };
+    }
+
+    #[test]
+    fn from_env_defaults_bcrypt_max_concurrent_when_unset() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        set_valid_auth_env();
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::remove_var("BCRYPT_MAX_CONCURRENT") };
+        let settings = AuthSettings::from_env().expect("a valid env should load");
+        assert_eq!(settings.bcrypt_max_concurrent, DEFAULT_BCRYPT_MAX_CONCURRENT);
+    }
+
+    #[test]
+    fn from_env_rejects_a_zero_bcrypt_max_concurrent() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        set_valid_auth_env();
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::set_var("BCRYPT_MAX_CONCURRENT", "0") };
+        let result = AuthSettings::from_env();
+        assert!(
+            result.is_err(),
+            "BCRYPT_MAX_CONCURRENT=0 must be rejected at startup, got {result:?}"
+        );
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::remove_var("BCRYPT_MAX_CONCURRENT") };
+    }
+
+    #[test]
+    fn from_env_rejects_a_non_numeric_bcrypt_max_concurrent() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        set_valid_auth_env();
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::set_var("BCRYPT_MAX_CONCURRENT", "not-a-number") };
+        let result = AuthSettings::from_env();
+        assert!(
+            result.is_err(),
+            "a non-numeric BCRYPT_MAX_CONCURRENT must be rejected, got {result:?}"
+        );
+        // SAFETY: guarded by ENV_MUTEX.
+        unsafe { std::env::remove_var("BCRYPT_MAX_CONCURRENT") };
     }
 }
