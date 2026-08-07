@@ -1,7 +1,7 @@
 // Integration tests for the Redis-backed rate limiter.
 // These require a running Redis instance.
 //
-// To run: REDIS_URL=redis://127.0.0.1:6379 cargo test --test integration -- --ignored redis_rate_limit
+// To run: REDIS_URL=redis://127.0.0.1:6379 cargo test -- --ignored redis_rate_limit
 
 use std::net::{IpAddr, Ipv4Addr};
 

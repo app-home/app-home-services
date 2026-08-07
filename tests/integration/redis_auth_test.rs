@@ -3,7 +3,7 @@
 // a rejected one (wrong/missing password), to confirm auth is actually enforced
 // rather than silently ignored.
 //
-// To run: cargo test --test integration -- --ignored redis_auth
+// To run: cargo test -- --ignored redis_auth
 //
 // Prerequisites:
 // - `podman` (or an aliased `docker`) available on PATH and able to pull/run images

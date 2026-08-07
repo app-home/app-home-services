@@ -113,7 +113,7 @@ cargo test
 cargo test --lib
 
 # Run integration tests (requires running PostgreSQL)
-cargo test --test integration
+cargo test -- --ignored
 ```
 
 ## Checking Audit Log

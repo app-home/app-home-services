@@ -1,7 +1,7 @@
 // Integration tests for rate limiting on /api/auth/refresh.
 // These tests require a running PostgreSQL database and the server to be started.
 //
-// To run: cargo test --test integration -- --ignored
+// To run: cargo test -- --ignored
 
 use std::net::{IpAddr, Ipv4Addr};
 

@@ -23,7 +23,7 @@
 // `_cc(new|old)` regex would never match a truncated leftover (e.g. `_ccne`).
 // The real production index name (45 chars + `_ccnew`) is well under the limit.
 //
-// To run: cargo test --test tests -- --ignored migration_recovery
+// To run: cargo test -- --ignored migration_recovery
 //
 // Prerequisites: DATABASE_URL set and migrations applied (same as the other
 // integration tests; see `access_token_revocation_outbox_test.rs`).

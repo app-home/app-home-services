@@ -5,7 +5,7 @@
 // full loop with a real Redis is covered by the podman-based tests in
 // `redis_access_token_blacklist_test.rs`.
 //
-// To run: cargo test --test integration -- --ignored access_token_revocation_outbox
+// To run: cargo test -- --ignored access_token_revocation_outbox
 //
 // Prerequisites:
 // - Set DATABASE_URL environment variable

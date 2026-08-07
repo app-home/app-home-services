@@ -10,7 +10,7 @@
 - `rejects_connection_with_the_wrong_password`
 - `rejects_connection_with_no_password_at_all`
 
-Run with: `cargo test --test integration -- --ignored redis_auth`
+Run with: `cargo test -- --ignored redis_auth`
 
 **Recommendation**: always set `--requirepass` (or Redis 6+ ACLs, if you need
 per-application credentials rather than one shared password) on any Redis instance

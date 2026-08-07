@@ -57,7 +57,7 @@ Decisions (confirmed):
 - `cargo build --locked`, `cargo clippy --workspace --all-targets`,
   `cargo fmt --check`, `cargo test --lib` — all green.
 - Manual: `curl -i http://localhost:3000/api/health` confirms all four headers.
-- Integration: `cargo test --test integration -- --ignored security_headers`
+- Integration: `cargo test -- --ignored security_headers`
   against a running server.
 
 ## Notes

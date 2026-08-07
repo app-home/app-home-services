@@ -1,6 +1,6 @@
 // Integration test for the DB-backed /api/health endpoint (see src/health.rs).
 //
-// To run: cargo test --test integration -- --ignored health
+// To run: cargo test -- --ignored health
 //
 // Only the happy path is covered here (a healthy DB -> 200). Testing the unhealthy
 // path (DB unreachable -> 503) meaningfully would require killing the shared

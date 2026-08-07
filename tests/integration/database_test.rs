@@ -1,7 +1,7 @@
 // Database integration tests.
 // These tests require a running PostgreSQL database.
 //
-// To run: cargo test --test integration -- --ignored
+// To run: cargo test -- --ignored
 //
 // Prerequisites:
 // - Set DATABASE_URL environment variable

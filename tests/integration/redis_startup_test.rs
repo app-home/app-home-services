@@ -2,7 +2,7 @@
 // set but Redis is unreachable, mirroring startup_test.rs's existing pattern for an
 // unreachable database.
 //
-// To run: cargo test --test integration -- --ignored
+// To run: cargo test -- --ignored
 //
 // Prerequisites:
 // - A reachable PostgreSQL database at DATABASE_URL (unlike startup_test.rs, this

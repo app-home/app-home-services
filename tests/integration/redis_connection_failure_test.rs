@@ -4,7 +4,7 @@
 // in-memory per-instance shadow on every RateLimiter method (see #89), while
 // incrementing its error counter each time.
 //
-// To run: cargo test --test integration -- --ignored redis_connection_failure
+// To run: cargo test -- --ignored redis_connection_failure
 //
 // Prerequisites:
 // - `podman` (or an aliased `docker`) available on PATH and able to pull/run images

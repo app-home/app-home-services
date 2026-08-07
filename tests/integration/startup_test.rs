@@ -1,7 +1,7 @@
 // Integration tests for startup hardening.
 // These tests verify the system exits with error when the database is unreachable.
 //
-// To run: cargo test --test integration -- --ignored
+// To run: cargo test -- --ignored
 //
 // Prerequisites: None (this test intentionally uses an invalid database URL)
 
