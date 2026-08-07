@@ -134,7 +134,7 @@ Successful login returns:
 }
 ```
 
-- `access_token`: Short-lived JWT (default 15 min) for authenticating subsequent requests. Each token carries a unique `jti` so it can be revoked individually (see Logout below).
+- `access_token`: Short-lived JWT (default 15 min) for authenticating subsequent requests. Each token carries a unique `jti` so it can be revoked individually (see Logout below). Access tokens issued before this deployment (i.e. before JTI-based revocation shipped) do **not** carry a `jti` claim and are treated as unknown by the revocation check rather than revoked; clients holding such tokens should obtain a fresh pair by re-authenticating.
 - `refresh_token`: Longer-lived JWT (default 7 days) used with `/api/auth/refresh` to obtain a new token pair.
 
 Failed logins return `401` with `{"error": "Invalid username or password"}`. Password verification always performs exactly one bcrypt check (a real one, or a dummy one of equal cost when the username doesn't exist or has no password set), so a nonexistent username can't be told apart from a wrong password by response time; a flat 50 ms delay is layered on top as additional defense-in-depth.
