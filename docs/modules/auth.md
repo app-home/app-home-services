@@ -100,6 +100,8 @@ Aggregate root containing `User + Vec<Session> + pending domain events`.
 
 Access tokens are stateless JWTs, so signature/expiry validation alone can't stop a stolen token from being used after logout. Each access token therefore carries a unique `jti` claim, and logout blacklists the presented token for its remaining lifetime via the `AccessTokenBlacklist` port (`shared::ports`):
 
+> **Pre-JTI migration note**: access tokens issued before this deployment carried no `jti` claim. Their lookup in the blacklist returns "not revoked" (fail-open, since an unknown `jti` is treated as unrevoked), so they behave as before rather than being rejected. Clients still holding such tokens should obtain a new pair via `/api/auth/login` once this is deployed; all tokens from here on carry a `jti`.
+
 | Adapter | Description |
 |---------|-------------|
 | `MemoryAccessTokenBlacklist` | In-memory (`HashMap<Uuid, Instant>` + TTL), never errors; single-instance safe only |
