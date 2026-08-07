@@ -80,11 +80,13 @@ password hashing while OWASP recommends 12-14 on modern hardware. Resolution
 - `BCRYPT_COST` row in the env-var table: default `12`, range `12..=31`,
   OWASP rationale, tuning note.
 - `.env.example`: `BCRYPT_COST=` with a comment block.
-- `compose.yaml` test-runner is left unchanged: it runs the real process, so the
-  fail-fast OWASP floor applies there too (no `BCRYPT_COST=4`). The 53-test
-  podman suite stays at the default cost 12; login-heavy tests add roughly
-  +0.5s/hash, still well within a normal CI budget. Low costs are only used in
-  direct unit tests (`TEST_BCRYPT_COST = 4`), which never go through `from_env`.
+- `compose.yaml` no longer ships a `test-runner` service (removed in #131): it is
+  only the postgres+redis fixture, and the full integration suite runs locally via
+  `scripts/test-with-podman.ps1` against the real process, so the fail-fast OWASP
+  floor applies there too (no `BCRYPT_COST=4`). The 53-test podman suite stays at
+  the default cost 12; login-heavy tests add roughly +0.5s/hash, still well within
+  a normal CI budget. Low costs are only used in direct unit tests
+  (`TEST_BCRYPT_COST = 4`), which never go through `from_env`.
 
 ## Validation
 

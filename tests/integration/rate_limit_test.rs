@@ -1,7 +1,7 @@
 // Integration tests for rate limiting.
 // These tests require a running PostgreSQL database and the server to be started.
 //
-// To run: cargo test --test integration -- --ignored
+// To run: cargo test -- --ignored
 //
 // Prerequisites:
 // - Set DATABASE_URL environment variable
@@ -17,7 +17,7 @@ use app_home_services::infrastructure::rate_limiter::redis::RedisRateLimiter;
 /// regardless of prior test state.
 async fn reset_rate_limiters() {
     let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:16379".to_string());
     let ip = IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1));
     for prefix in ["login", "refresh"] {
         if let Ok(limiter) = RedisRateLimiter::connect(&redis_url, 10, 300, prefix).await {

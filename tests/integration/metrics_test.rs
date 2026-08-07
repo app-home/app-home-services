@@ -11,7 +11,7 @@
 // (is_metrics_access_allowed), which don't need a real HTTP server or a non-loopback
 // peer address to exercise.
 //
-// To run: cargo test --test integration -- --ignored metrics
+// To run: cargo test -- --ignored metrics
 
 #[tokio::test]
 #[ignore]

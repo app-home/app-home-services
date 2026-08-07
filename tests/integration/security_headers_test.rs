@@ -1,7 +1,7 @@
 // Integration tests for HTTP security headers (see #90).
 // These tests require the server to be started.
 //
-// To run: cargo test --test integration -- --ignored security_headers
+// To run: cargo test -- --ignored security_headers
 //
 // Prerequisites:
 // - Set DATABASE_URL and JWT_SECRET environment variables
