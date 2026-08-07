@@ -1,7 +1,7 @@
 // Integration tests for the Redis-backed rate limiter.
 // These require a running Redis instance.
 //
-// To run: REDIS_URL=redis://127.0.0.1:6379 cargo test -- --ignored redis_rate_limit
+// To run: REDIS_URL=redis://127.0.0.1:16379 cargo test -- --ignored redis_rate_limit
 
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -16,7 +16,7 @@ fn test_ip(last_octet: u8) -> IpAddr {
 
 async fn connect() -> RedisRateLimiter {
     let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:16379".to_string());
     RedisRateLimiter::connect(&redis_url, 3, 60, "test")
         .await
         .expect("Failed to connect to Redis -- is it running and REDIS_URL correct?")
@@ -88,7 +88,7 @@ async fn test_redis_rate_limiter_different_prefixes_are_isolated() {
     // Login and refresh use separate key_prefix values in production (see main.rs).
     // Two limiters with different prefixes over the same IP must not share a counter.
     let redis_url =
-        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
+        std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:16379".to_string());
     let login_limiter = RedisRateLimiter::connect(&redis_url, 3, 60, "test-login")
         .await
         .expect("Failed to connect to Redis");

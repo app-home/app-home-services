@@ -315,7 +315,7 @@ cargo test
 cargo test -- --ignored
 
 # Run Redis integration tests specifically (requires a running Redis)
-REDIS_URL=redis://127.0.0.1:6379 cargo test -- --ignored --test-threads=1 redis_rate_limit
+REDIS_URL=redis://127.0.0.1:16379 cargo test -- --ignored --test-threads=1 redis_rate_limit
 ```
 
 - **Unit tests**: Session entity, JWT service, rate limiter (in-memory), client IP resolution, `/metrics` IP allowlist decision logic, user action audit, password hashing, default admin password strength
