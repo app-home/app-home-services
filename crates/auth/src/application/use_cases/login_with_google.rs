@@ -53,8 +53,16 @@ pub async fn login_with_google(
     let expires_at =
         chrono::Utc::now() + chrono::Duration::days(settings.refresh_token_expiry_days);
 
+    // Off the async runtime's worker threads and bounded process-wide (see
+    // #175) -- bcrypt is synchronous, CPU-bound work, so calling it inline here
+    // would block whichever Tokio worker thread is running this task.
+    let refresh_token_owned = token_pair.refresh_token.clone();
+    let cost = settings.bcrypt_cost;
     let refresh_hash = HashedPassword::new(
-        bcrypt::hash(&token_pair.refresh_token, settings.bcrypt_cost)
+        settings
+            .bcrypt_limiter
+            .run_bounded(move || bcrypt::hash(refresh_token_owned, cost))
+            .await?
             .map_err(|_| AuthError::TokenGenerationFailed)?,
     )
     .map_err(|_| AuthError::TokenGenerationFailed)?;

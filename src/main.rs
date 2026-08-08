@@ -514,7 +514,17 @@ async fn seed_default_user(
         return Ok(true);
     }
 
-    let password_hash = bcrypt::hash(&settings.default_user_password, settings.bcrypt_cost)
+    // Off the async runtime's worker threads and bounded process-wide (see
+    // #175), same as every other bcrypt call in this codebase -- this only runs
+    // once at startup, but there's no reason for it to be the one bcrypt call
+    // that bypasses the shared policy.
+    let password_owned = settings.default_user_password.clone();
+    let cost = settings.bcrypt_cost;
+    let password_hash = settings
+        .bcrypt_limiter
+        .run_bounded(move || bcrypt::hash(password_owned, cost))
+        .await
+        .map_err(|e| format!("bcrypt task failed: {e}"))?
         .map_err(|e| format!("password hashing failed: {e}"))?;
 
     let id = uuid::Uuid::now_v7();

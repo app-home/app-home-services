@@ -101,10 +101,32 @@ impl UserAggregate {
         Ok(auth_method)
     }
 
+    /// Rotates `session_id` into a new session, provided it's found, active,
+    /// unexpired, and `token_matches`.
+    ///
+    /// `token_matches` -- whether the presented refresh token's bcrypt hash
+    /// matched the stored one -- is a plain `bool` computed by the caller
+    /// *before* calling this method, not a raw token this method hashes itself
+    /// (see #175). bcrypt is synchronous, CPU-bound work; running it here would
+    /// mean either blocking whatever thread is running this purely-synchronous
+    /// domain method, or making this method (and the domain aggregate more
+    /// broadly) async just to accommodate one call's blocking-work concerns.
+    /// The caller (`refresh_token`, an application-layer use case that's
+    /// already `async`) looks up this session's stored hash from
+    /// `self.sessions` and verifies it via `AuthSettings::bcrypt_limiter`
+    /// beforehand instead.
+    ///
+    /// The found/active/expired checks happen before `token_matches` is even
+    /// consulted, and in that order, regardless of what `token_matches` is --
+    /// this is what makes refresh-token-reuse detection work: presenting *any*
+    /// token (matching or not) against an already-inactive session must still
+    /// resolve to `SessionInvalidated`, not `InvalidRefreshToken`, so the use
+    /// case can tell "reuse of a rotated-away token" apart from "wrong token
+    /// entirely" and revoke every session for the user only in the former case.
     pub fn rotate_session(
         &mut self,
         session_id: Uuid,
-        refresh_token: &str,
+        token_matches: bool,
         new_session_id: Uuid,
         new_refresh_hash: HashedPassword,
         expires_at: DateTime<Utc>,
@@ -123,14 +145,7 @@ impl UserAggregate {
             return Err(AuthError::SessionExpired);
         }
 
-        let is_valid = match bcrypt::verify(refresh_token, session.refresh_token_hash().as_ref()) {
-            Ok(valid) => valid,
-            Err(e) => {
-                tracing::error!(error = %e, "bcrypt::verify failed for refresh token hash");
-                false
-            }
-        };
-        if !is_valid {
+        if !token_matches {
             return Err(AuthError::InvalidRefreshToken);
         }
 
