@@ -1,4 +1,7 @@
 pub mod api_doc;
+/// Builds the CORS layer from `CORS_ALLOWED_ORIGINS`; the "config in, layer out"
+/// sibling of `security_headers`.
+pub mod cors;
 pub mod health;
 /// Builds the application router outside `main`, so the app can be constructed
 /// and exercised without starting the process (see #191).

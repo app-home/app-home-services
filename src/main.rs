@@ -8,6 +8,7 @@ use shared::auth::JwtVerification;
 
 use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
 use admin::application::ports::admin_repository::AdminRepository;
+use app_home_services::cors::build_cors_layer;
 use app_home_services::infrastructure::access_token_blacklist::durable::DurableRevocationBlacklist;
 use app_home_services::infrastructure::access_token_blacklist_setup::{
     AccessTokenBlacklistErrorCounter, build_access_token_blacklist,
@@ -216,28 +217,7 @@ async fn main() {
         settings.trusted_proxy_ips.clone(),
     );
 
-    let cors = {
-        let origins_str = &settings.cors_allowed_origins;
-        if origins_str.is_empty() {
-            tracing::info!("CORS: same-origin only (no origins configured)");
-            tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::AllowOrigin::list(
-                Vec::<axum::http::HeaderValue>::new(),
-            ))
-        } else {
-            let origins: Vec<axum::http::HeaderValue> = origins_str
-                .split(',')
-                .filter_map(|o| o.trim().parse::<axum::http::HeaderValue>().ok())
-                .collect();
-            tracing::info!(?origins, "CORS: configured origins");
-            tower_http::cors::CorsLayer::new()
-                .allow_origin(tower_http::cors::AllowOrigin::list(origins))
-                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-                .allow_headers([
-                    axum::http::header::CONTENT_TYPE,
-                    axum::http::header::AUTHORIZATION,
-                ])
-        }
-    };
+    let cors = build_cors_layer(&settings.cors_allowed_origins);
 
     let app = build_router(RouterDeps {
         state,

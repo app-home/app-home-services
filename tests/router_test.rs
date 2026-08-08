@@ -23,6 +23,7 @@ use tower::ServiceExt;
 
 use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
 use admin::application::ports::admin_repository::AdminRepository;
+use app_home_services::cors::build_cors_layer;
 use app_home_services::router::{RouterDeps, build_router};
 use auth::adapters::google_auth_provider::GoogleAuthProvider;
 use auth::adapters::jwt_service::JwtServiceImpl;
@@ -54,7 +55,10 @@ const TEST_BCRYPT_MAX_CONCURRENT: usize = 2;
 #[derive(Default)]
 struct RouterOptions {
     enable_swagger: bool,
-    cors_allowed_origins: Vec<&'static str>,
+    /// Raw `CORS_ALLOWED_ORIGINS` value, passed verbatim to the production
+    /// `build_cors_layer` -- these tests exercise the real policy builder, not a
+    /// reimplementation of it.
+    cors_allowed_origins: &'static str,
     metrics_allowed_ips: Vec<IpAddr>,
 }
 
@@ -124,25 +128,7 @@ fn router(options: RouterOptions) -> Router {
     // would make these tests order-dependent. The handle renders fine either way.
     let metrics_handle = PrometheusBuilder::new().build_recorder().handle();
 
-    let cors = if options.cors_allowed_origins.is_empty() {
-        tower_http::cors::CorsLayer::new()
-            .allow_origin(tower_http::cors::AllowOrigin::list(Vec::<
-                axum::http::HeaderValue,
-            >::new()))
-    } else {
-        let origins: Vec<axum::http::HeaderValue> = options
-            .cors_allowed_origins
-            .iter()
-            .map(|o| o.parse().expect("test origin should be a valid header"))
-            .collect();
-        tower_http::cors::CorsLayer::new()
-            .allow_origin(tower_http::cors::AllowOrigin::list(origins))
-            .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-            .allow_headers([
-                axum::http::header::CONTENT_TYPE,
-                axum::http::header::AUTHORIZATION,
-            ])
-    };
+    let cors = build_cors_layer(options.cors_allowed_origins);
 
     build_router(RouterDeps {
         state,
@@ -281,7 +267,7 @@ async fn cors_allows_a_configured_origin() {
 
     let response = send(
         router(RouterOptions {
-            cors_allowed_origins: vec!["https://app.example"],
+            cors_allowed_origins: "https://app.example",
             ..RouterOptions::default()
         }),
         request,
@@ -310,7 +296,7 @@ async fn cors_rejects_a_foreign_origin_even_when_an_allowlist_is_configured() {
 
     let response = send(
         router(RouterOptions {
-            cors_allowed_origins: vec!["https://app.example"],
+            cors_allowed_origins: "https://app.example",
             ..RouterOptions::default()
         }),
         request,
@@ -325,6 +311,37 @@ async fn cors_rejects_a_foreign_origin_even_when_an_allowlist_is_configured() {
             .is_none(),
         "an origin outside the configured list must not be echoed back"
     );
+}
+
+#[tokio::test]
+async fn every_origin_in_a_comma_separated_list_is_allowed() {
+    // Covers `build_cors_layer`'s own parsing -- splitting on commas and
+    // trimming surrounding whitespace -- rather than tower-http's matching.
+    for origin in ["https://one.example", "https://two.example"] {
+        let mut request = get("/no-such-route");
+        request
+            .headers_mut()
+            .insert("origin", origin.parse().unwrap());
+
+        let response = send(
+            router(RouterOptions {
+                cors_allowed_origins: "https://one.example , https://two.example",
+                ..RouterOptions::default()
+            }),
+            request,
+            loopback(),
+        )
+        .await;
+
+        assert_eq!(
+            response
+                .headers()
+                .get("access-control-allow-origin")
+                .and_then(|v| v.to_str().ok()),
+            Some(origin),
+            "{origin} should be allowed despite the whitespace around the separator"
+        );
+    }
 }
 
 #[tokio::test]
