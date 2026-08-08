@@ -57,6 +57,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `ACCESS_TOKEN_EXPIRY_MINUTES` | No | `15` | Access token lifetime in minutes |
 | `REFRESH_TOKEN_EXPIRY_DAYS` | No | `7` | Refresh token lifetime in days |
 | `BCRYPT_COST` | No | `12` | bcrypt cost used for password and refresh-token hashing (OWASP minimum). Must be `>= 12` (OWASP) and `<= 31` (bcrypt's maximum); the service refuses to start otherwise (see #94) |
+| `BCRYPT_MAX_CONCURRENT` | No | `8` | Process-wide cap on concurrent bcrypt hash/verify operations; every call runs off the async runtime's worker threads via `spawn_blocking`, bounded by this limit so a burst of concurrent auth traffic can't saturate every CPU core at once. Must be `>= 1`; the service refuses to start with `0` (see #175) |
 | `JWT_ISSUER` | No | `app-home-services` | `iss` claim minted/required on tokens; set a distinct value per environment so tokens can't be replayed across environments (see #87) |
 | `JWT_AUDIENCE` | No | `app-home-services` | `aud` claim minted/required on tokens; same cross-environment replay rationale as `JWT_ISSUER` |
 | `RATE_LIMIT_MAX_ATTEMPTS` | No | `10` | Max failed login attempts per IP within the time window |
@@ -264,11 +265,12 @@ the `UserDirectory` port), and concrete signals for when that becomes worth doin
 | Domain | `domain/entities/` | `User`, `Session`, `UserAction` entities |
 | Domain | `domain/aggregate.rs` | `UserAggregate` with domain events & invariant validation |
 | Domain | `domain/errors.rs` | `AuthError` enum with typed error variants |
+| Domain | `domain/services/bcrypt_task.rs` | `BcryptLimiter` -- runs bcrypt hash/verify work via `spawn_blocking`, bounded by a shared `Semaphore` (see #175) |
 | Application | `application/ports/` | Traits: `UserRepository`, `SessionRepository`, `JwtService`, `RateLimiter`, `AuthProvider` |
 | Application | `application/use_cases/` | `login_with_password`, `login_with_google`, `logout`, `refresh_token`, `record_audit_entry` |
 | Adapters | `adapters/inbound/` | HTTP handlers + auth middleware |
 | Adapters | `adapters/outbound/` | `PostgresUserRepo`, `PostgresUserDirectory`, `PostgresSessionRepo`, `JwtServiceImpl`, `MemoryRateLimiter`, `RedisRateLimiter`, `GoogleAuthProvider` |
-| Config | `config/` | `AuthSettings` (auth-specific env vars) |
+| Config | `config/` | `AuthSettings` (auth-specific env vars, including `bcrypt_limiter`) |
 
 Client IP resolution (`resolve_client_ip`, used by login/refresh rate limiting and by the `/metrics` IP allowlist guard) lives in `crates/shared/src/net.rs`, not in `auth`, since more than one bounded context needs it.
 
@@ -318,7 +320,7 @@ cargo test -- --ignored
 REDIS_URL=redis://127.0.0.1:16379 cargo test -- --ignored --test-threads=1 redis_rate_limit
 ```
 
-- **Unit tests**: Session entity, JWT service, rate limiter (in-memory), client IP resolution, `/metrics` IP allowlist decision logic, user action audit, password hashing, default admin password strength
+- **Unit tests**: Session entity, JWT service, rate limiter (in-memory), client IP resolution, `/metrics` IP allowlist decision logic, user action audit, password hashing, default admin password strength, bounded bcrypt task execution (`BcryptLimiter`, see #175)
 - **Integration tests** (ignored by default): Login, logout, refresh, refresh rate limiting, CORS, rate limiting, startup hardening, Redis-backed rate limiting, Redis auth enforcement, live Redis connection failure, DB-backed health check, `/metrics` reachability
 
 ### Podman test environment
@@ -442,6 +444,7 @@ The two error-counter alerts start deliberately low (`> 0`) since there's no bas
 - Rate limiting per IP on both login and refresh (independent counters) to prevent brute-force attacks, backed by Redis for multi-instance deployments (see Rate Limiting above)
 - `X-Forwarded-For`/`X-Real-IP` only trusted from configured reverse proxies (`TRUSTED_PROXY_IPS`), preventing rate-limit bypass via header spoofing
 - Password login always performs exactly one bcrypt verification (real or a fixed-cost dummy), closing the timing side-channel that would otherwise reveal whether a username exists; a uniform 50 ms delay is layered on top as additional defense-in-depth
+- Every production bcrypt hash/verify call (password login, refresh-token hashing/verification, default-user seeding) runs off the async runtime's worker threads via `spawn_blocking` and is bounded by a process-wide concurrency limit (`BCRYPT_MAX_CONCURRENT`), so bcrypt's deliberately-expensive CPU work can't stall unrelated requests on the same worker thread or be driven unbounded by concurrent traffic from many different IPs (see #175)
 - CORS denied by default (same-origin only)
 - HTTP server binds to `127.0.0.1` by default (loopback only) -- see the `SERVER_HOST` note under Environment Variables and Container Image above for when and how to change this
 - `/metrics` requires no credentials but can be restricted to an IP allowlist (`METRICS_ALLOWED_IPS`), unrestricted by default -- see Metrics & Alerting above
