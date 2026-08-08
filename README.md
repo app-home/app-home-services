@@ -57,7 +57,7 @@ User authentication service supporting local password login, Google OAuth, sessi
 | `ACCESS_TOKEN_EXPIRY_MINUTES` | No | `15` | Access token lifetime in minutes |
 | `REFRESH_TOKEN_EXPIRY_DAYS` | No | `7` | Refresh token lifetime in days |
 | `BCRYPT_COST` | No | `12` | bcrypt cost used for password and refresh-token hashing (OWASP minimum). Must be `>= 12` (OWASP) and `<= 31` (bcrypt's maximum); the service refuses to start otherwise (see #94) |
-| `BCRYPT_MAX_CONCURRENT` | No | `8` | Process-wide cap on concurrent bcrypt hash/verify operations; every call runs off the async runtime's worker threads via `spawn_blocking`, bounded by this limit so a burst of concurrent auth traffic can't saturate every CPU core at once. Must be `>= 1`; the service refuses to start with `0` (see #175) |
+| `BCRYPT_MAX_CONCURRENT` | No | `8` | Process-wide cap on concurrent bcrypt hash/verify operations; every call runs off the async runtime's worker threads via `spawn_blocking`, bounded by this limit so a burst of concurrent auth traffic can't saturate every CPU core at once. Must be between `1` and `512`; the service refuses to start with `0`, or above `512` (Tokio's default blocking-thread pool size -- higher values add no real parallelism) (see #175) |
 | `JWT_ISSUER` | No | `app-home-services` | `iss` claim minted/required on tokens; set a distinct value per environment so tokens can't be replayed across environments (see #87) |
 | `JWT_AUDIENCE` | No | `app-home-services` | `aud` claim minted/required on tokens; same cross-environment replay rationale as `JWT_ISSUER` |
 | `RATE_LIMIT_MAX_ATTEMPTS` | No | `10` | Max failed login attempts per IP within the time window |

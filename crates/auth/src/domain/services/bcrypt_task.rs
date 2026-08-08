@@ -42,6 +42,12 @@ impl BcryptLimiter {
     /// for the default and its rationale. Clamped to at least 1 --
     /// `Semaphore::new(0)` would permanently block every bcrypt call, which is
     /// never a sensible outcome for a misconfigured value.
+    ///
+    /// There is no matching upper clamp: `Semaphore::new` panics above
+    /// `Semaphore::MAX_PERMITS`, and silently capping an absurd value here
+    /// would hide the misconfiguration instead of reporting it. Env-sourced
+    /// values are bounded by `validate_bcrypt_max_concurrent`, which fails
+    /// startup with a readable error well below that panic threshold.
     pub fn new(max_concurrent: usize) -> Self {
         Self {
             semaphore: Arc::new(Semaphore::new(max_concurrent.max(1))),
