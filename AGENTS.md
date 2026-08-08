@@ -31,10 +31,10 @@ Modular monolith with DDD + hexagonal architecture. Bounded contexts: `crates/au
 - **Composition root split (#191)**: `build_router` (in `src/router.rs`) and `build_cors_layer` (in `src/cors.rs`) extracted out of `main` so the app is constructible/testable in-process; background pollers/flusher moved to `infrastructure::telemetry::pollers`.
 
 ### Active
-- `refactor/191-split-main-composition-root`: pollers extraction done, pending commit/push/PR.
+- `refactor/191-split-main-composition-root`: pushed; PR #192 open against `development`.
 
 ### Blocked
 - (none)
 
 ### Next
-Push `refactor/191-split-main-composition-root` and open the PR, then close AGENTS.md/issue #191. Afterwards: add admin unit tests, or start another bounded context.
+Await PR #192 review/merge, then close issue #191. Afterwards: add admin unit tests, or start another bounded context.
