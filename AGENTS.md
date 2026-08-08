@@ -1,9 +1,10 @@
 <!-- SPECKIT START -->
-The current implementation plan is at `specs/013-bcrypt-cost/plan.md`.
-Read it for context about technologies, project structure, and the
-implementation approach for raising bcrypt cost to 12 (OWASP) via a
-centralized `DEFAULT_BCRYPT_COST` constant plus an env-configurable,
-fail-fast-validated `BCRYPT_COST` override, issue #94.
+The active work is issue #191: splitting the composition root so the
+application (router, CORS, telemetry pollers) can be built and exercised
+in-process without starting the server. `build_router`/`build_cors_layer`
+live in the `src/` crate (covered by `tests/router_test.rs`); background
+telemetry pollers live in `crates/infrastructure/src/telemetry/pollers.rs`.
+See the "Active" section below for the current step.
 <!-- SPECKIT END -->
 
 ## Project State (auto-updated by opencode)
@@ -25,12 +26,15 @@ Modular monolith with DDD + hexagonal architecture. Bounded contexts: `crates/au
 - **New bounded context: `crates/profiles/`**: User profiles context with `user_profiles` table, `ProfileRepository` port, Postgres implementation, value objects (`AvatarUrl`, `Bio`), use cases (`get_profile`, `update_profile`). HTTP handlers with JWT extraction (no base64 dep). Combined OpenAPI spec in `src/api_doc.rs` (replaces `auth::api_doc::ApiDoc`). Contracts at `specs/005-user-profiles/contracts/`.
 - **New bounded context: `crates/admin/`**: Admin user management context. Extends `users` table with `role` column (migration 007). `Role` value object (user/admin), `AdminUser` entity, `AdminRepository` port, Postgres implementation, use cases (`list_users`, `get_user`, `update_user_role`). Admin guard checks JWT + DB role. Contracts at `specs/006-admin/contracts/`. Routes: `GET /api/admin/users`, `GET /api/admin/users/{id}`, `PUT /api/admin/users/{id}/role`. Admin self-demotion blocked (#92): `update_user_role` takes `actor_id` and returns `CannotChangeOwnRole` (403) when `actor_id == user_id`.
 - **Dependency graph**: `shared → auth → infrastructure → main → profiles → admin` (profiles and admin depend only on shared; no dep on auth).
+- **Bcrypt cost 12 (OWASP) (#94)**: centralized `DEFAULT_BCRYPT_COST = 12` + fail-fast `BCRYPT_COST` override (`validate_bcrypt_cost`, `12..=31`); timing-safe not-found path uses a per-cost precomputed dummy hash cache.
+- **Bounded bcrypt concurrency (#175)**: `BcryptLimiter` (`bcrypt_task.rs`) routes every hash/verify through `spawn_blocking` with a `BCRYPT_MAX_CONCURRENT` semaphore (max 512, Tokio's blocking-pool ceiling).
+- **Composition root split (#191)**: `build_router` (in `src/router.rs`) and `build_cors_layer` (in `src/cors.rs`) extracted out of `main` so the app is constructible/testable in-process; background pollers/flusher moved to `infrastructure::telemetry::pollers`.
 
 ### Active
-- (none)
+- `refactor/191-split-main-composition-root`: pollers extraction done, pending commit/push/PR.
 
 ### Blocked
 - (none)
 
 ### Next
-Add admin unit tests (domain, use-cases with mock repo), or add more admin features (toggle user status, update role), or start another bounded context.
+Push `refactor/191-split-main-composition-root` and open the PR, then close AGENTS.md/issue #191. Afterwards: add admin unit tests, or start another bounded context.

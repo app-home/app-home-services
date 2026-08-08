@@ -1,6 +1,4 @@
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use std::sync::Arc;
 
@@ -9,14 +7,13 @@ use shared::auth::JwtVerification;
 use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
 use admin::application::ports::admin_repository::AdminRepository;
 use app_home_services::cors::build_cors_layer;
-use app_home_services::infrastructure::access_token_blacklist::durable::DurableRevocationBlacklist;
-use app_home_services::infrastructure::access_token_blacklist_setup::{
-    AccessTokenBlacklistErrorCounter, build_access_token_blacklist,
-};
+use app_home_services::infrastructure::access_token_blacklist_setup::build_access_token_blacklist;
 use app_home_services::infrastructure::config::Settings;
 use app_home_services::infrastructure::metrics_guard::MetricsGuardConfig;
-use app_home_services::infrastructure::rate_limiter_setup::{
-    RateLimiterErrorCounters, build_rate_limiters,
+use app_home_services::infrastructure::rate_limiter_setup::build_rate_limiters;
+use app_home_services::infrastructure::telemetry::pollers::{
+    spawn_access_token_revocation_flusher, spawn_backend_error_counter_poller,
+    spawn_db_pool_metrics_poller,
 };
 use app_home_services::router::{RouterDeps, build_router};
 use auth::adapters::audit_event_handler::AuditEventHandler;
@@ -153,8 +150,6 @@ async fn main() {
             .await
             .expect("Failed to set up rate limiters");
 
-    spawn_rate_limiter_metrics_poller(rate_limiter_error_counters);
-
     // See build_access_token_blacklist's docs for why REDIS_URL selects the
     // backend, and why (unlike the rate limiters) an unreachable Redis falls back
     // to in-memory at startup rather than aborting -- the blacklist check fails
@@ -163,7 +158,9 @@ async fn main() {
     let (access_token_blacklist, blacklist_error_counter, revocation_flusher) =
         build_access_token_blacklist(&settings, &pool).await;
 
-    spawn_access_token_blacklist_metrics_poller(blacklist_error_counter);
+    // Both backends' error counters are mirrored by one task -- see
+    // `spawn_backend_error_counter_poller`.
+    spawn_backend_error_counter_poller(rate_limiter_error_counters, blacklist_error_counter);
 
     if let Some(flusher) = revocation_flusher {
         spawn_access_token_revocation_flusher(flusher, settings.revocation_flush_interval_seconds);
@@ -285,132 +282,6 @@ async fn main() {
             axum::serve(listener, service).await.expect("Server error");
         }
     }
-}
-
-/// Spawns a background task that, every 15 seconds, reads the shared Postgres
-/// pool's current size/idle-connection counts and publishes them as
-/// `db_pool_size` and `db_pool_idle` gauges to the installed Prometheus recorder
-/// (see #100).
-///
-/// `PgPool::size`/`num_idle` are cheap, synchronous, in-memory reads (no query
-/// against the database), so polling them costs nothing beyond the interval
-/// tick itself. `db_pool_size - db_pool_idle` is the number of connections
-/// currently checked out; that approaching `DB_MAX_CONNECTIONS` is the signal
-/// for pool exhaustion this metric exists to make visible (previously there was
-/// none -- a caller could only infer trouble indirectly, e.g. via
-/// `DB_ACQUIRE_TIMEOUT_SECONDS` errors after the fact).
-fn spawn_db_pool_metrics_poller(pool: sqlx::PgPool) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-
-            metrics::gauge!("db_pool_size").set(pool.size() as f64);
-            metrics::gauge!("db_pool_idle").set(pool.num_idle() as f64);
-        }
-    });
-}
-
-/// Spawns a background task that, every 15 seconds, reads each rate limiter's Redis
-/// error counter (if it has one -- see `RateLimiterErrorCounters`) and publishes it
-/// as `rate_limiter_redis_errors_total{scope="login"|"refresh"}` to the installed
-/// Prometheus recorder.
-///
-/// Uses `Counter::absolute` (not `increment`) since `counter` is already the
-/// cumulative total maintained independently inside `RedisRateLimiter` -- this task
-/// just mirrors that value into the metrics recorder on an interval, rather than
-/// tracking its own delta.
-///
-/// A no-op for a scope currently on the in-memory backend (`counters.login`/`refresh`
-/// is `None`), since there's nothing to poll there.
-fn spawn_rate_limiter_metrics_poller(counters: RateLimiterErrorCounters) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-
-            if let Some(counter) = &counters.login {
-                let value = counter.load(Ordering::Relaxed);
-                metrics::counter!("rate_limiter_redis_errors_total", "scope" => "login")
-                    .absolute(value);
-            }
-            if let Some(counter) = &counters.refresh {
-                let value = counter.load(Ordering::Relaxed);
-                metrics::counter!("rate_limiter_redis_errors_total", "scope" => "refresh")
-                    .absolute(value);
-            }
-        }
-    });
-}
-
-/// Spawns a background task that, every 15 seconds, reads the access token
-/// blacklist's Redis error counter (if it has one -- see
-/// `AccessTokenBlacklistErrorCounter`) and publishes it as
-/// `access_token_blacklist_redis_errors_total` to the installed Prometheus
-/// recorder.
-///
-/// Mirrors `spawn_rate_limiter_metrics_poller` (same `absolute`, not `increment`,
-/// since the counter is already the cumulative total held inside
-/// `RedisAccessTokenBlacklist`). A no-op on the in-memory backend.
-fn spawn_access_token_blacklist_metrics_poller(counter: AccessTokenBlacklistErrorCounter) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-
-            if let Some(counter) = &counter.redis {
-                let value = counter.load(Ordering::Relaxed);
-                metrics::counter!("access_token_blacklist_redis_errors_total").absolute(value);
-            }
-        }
-    });
-}
-
-/// Spawns the durable-revocation flush worker: retries every journaled access
-/// token revocation (`access_token_revocation_outbox`, see #140 and
-/// `DurableRevocationBlacklist`) against Redis on an interval, publishing the
-/// current backlog as `access_token_revocation_outbox_pending` after each sweep.
-///
-/// The first `tokio::time::interval` tick fires immediately, so any backlog that
-/// accumulated while the process was down is retried right at startup, not after
-/// the first full interval. `interval_secs` comes from
-/// `REVOCATION_FLUSH_INTERVAL_SECONDS` and is clamped to a minimum of 1 second
-/// (`interval` panics on a zero duration; a misconfigured 0 would otherwise kill
-/// the task -- and this worker, not the request path, is the right thing to
-/// protect here).
-fn spawn_access_token_revocation_flusher(
-    flusher: Arc<DurableRevocationBlacklist>,
-    interval_secs: u64,
-) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
-        // Default (Burst) replays every missed tick back-to-back with no delay
-        // between them if a sweep ever runs longer than the interval. A large
-        // outbox backlog is exactly the condition that makes a long sweep
-        // likely, so Burst would pile consecutive sweeps against Postgres/Redis
-        // right when they're already under the most load. Delay instead waits a
-        // full interval after each sweep before the next one, regardless of how
-        // long that sweep took.
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-
-            match flusher.flush_pending().await {
-                Ok(remaining) => {
-                    metrics::gauge!("access_token_revocation_outbox_pending").set(remaining as f64);
-                }
-                Err(e) => {
-                    // Postgres was unreachable for the sweep itself. The gauge is
-                    // left at its last known value rather than reset to 0, so a
-                    // genuine backlog isn't hidden by a failed sweep.
-                    tracing::error!(
-                        error = %e,
-                        "Access token revocation outbox flush failed (will retry on the next sweep)"
-                    );
-                }
-            }
-        }
-    });
 }
 
 async fn run_migrations(pool: &sqlx::PgPool) -> Result<(), sqlx::migrate::MigrateError> {
