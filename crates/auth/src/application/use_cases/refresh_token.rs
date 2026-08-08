@@ -37,15 +37,49 @@ pub async fn refresh_token(
     let expires_at =
         chrono::Utc::now() + chrono::Duration::days(settings.refresh_token_expiry_days);
 
+    // Off the async runtime's worker threads and bounded process-wide (see
+    // #175) -- bcrypt is synchronous, CPU-bound work, so calling it inline here
+    // would block whichever Tokio worker thread is running this task.
+    let new_refresh_token_owned = token_pair.refresh_token.clone();
+    let cost = settings.bcrypt_cost;
     let refresh_hash = HashedPassword::new(
-        bcrypt::hash(&token_pair.refresh_token, settings.bcrypt_cost)
+        settings
+            .bcrypt_limiter
+            .run_bounded(move || bcrypt::hash(new_refresh_token_owned, cost))
+            .await?
             .map_err(|_| AuthError::TokenGenerationFailed)?,
     )
     .map_err(|_| AuthError::TokenGenerationFailed)?;
 
+    // Verified here (application layer, already async) rather than inside
+    // `rotate_session` (domain layer, synchronous) -- see that method's docs
+    // for why, and for why looking this up before knowing whether the session
+    // is even active/unexpired is still correct (reuse detection depends on
+    // rotate_session checking found -> active -> expired -> token_matches in
+    // that exact order, not on when the hash comparison itself ran).
+    let token_matches = match aggregate
+        .sessions
+        .iter()
+        .find(|s| s.id() == claims.session_id)
+    {
+        Some(session) => {
+            let presented_token_owned = refresh_token.to_string();
+            let stored_hash_owned = session.refresh_token_hash().as_ref().to_string();
+            settings
+                .bcrypt_limiter
+                .run_bounded(move || bcrypt::verify(presented_token_owned, &stored_hash_owned))
+                .await?
+                .unwrap_or_else(|e| {
+                    tracing::error!(error = %e, "bcrypt::verify failed for refresh token hash");
+                    false
+                })
+        }
+        None => false,
+    };
+
     let new_session = match aggregate.rotate_session(
         claims.session_id,
-        refresh_token,
+        token_matches,
         new_session_id,
         refresh_hash,
         expires_at,
