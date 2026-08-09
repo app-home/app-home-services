@@ -10,9 +10,9 @@ The OpenAPI document at `/api-docs/openapi.json` is generated at compile time by
 
 1. **`#[utoipa::path]` annotations** on each handler function that define the HTTP method, path, request body, responses, and security scheme.
 2. **`#[derive(ToSchema)]`** on request and response DTOs that define the typed schemas.
-3. **`ApiDoc`** (`src/adapters/inbound/api_doc.rs`) that aggregates all annotated paths, schemas, and the Bearer JWT security scheme into a single `#[derive(OpenApi)]` struct.
+3. **`ApiDoc`** (`src/api_doc.rs`) that aggregates all annotated paths, schemas, and the Bearer JWT security scheme into a single `#[derive(OpenApi)]` struct.
 
-The `SwaggerUi` mount in `main.rs` serves both the JSON document and the interactive UI from the same `ApiDoc::openapi()` value.
+The `SwaggerUi` mount in `src/router.rs` serves both the JSON document and the interactive UI from the same `ApiDoc::openapi()` value.
 
 > **Note (since #86):** The mount is conditional on `ENABLE_SWAGGER=true` (default
 > `false`). With the flag unset, `/api-docs/openapi.json` and `/swagger-ui` return
@@ -23,10 +23,10 @@ The `SwaggerUi` mount in `main.rs` serves both the JSON document and the interac
 
 ## Adding A New Public Endpoint
 
-1. **Add handler + DTOs**: Create the handler in `src/adapters/inbound/`. Add `#[derive(Serialize, Deserialize, ToSchema)]` to any new request/response structs.
+1. **Add handler + DTOs**: Create the handler in the relevant inbound adapter (e.g. `crates/auth/src/adapters/inbound/`). Add `#[derive(Serialize, Deserialize, ToSchema)]` to any new request/response structs.
 2. **Add `#[utoipa::path]`**: Annotate the handler with all documented status codes, request body, and security scheme where applicable. Use non-sensitive `#[schema(example = ...)]` values.
-3. **Register in `ApiDoc`**: Add the handler's `__path_*` import and function reference to `paths(...)` in `ApiDoc`. Add any new schema types to `components(schemas(...))`.
-4. **Register the route**: Add the route in `main.rs` with `.route(...)`.
+3. **Register in `ApiDoc`**: Add the handler's `__path_*` import and function reference to `paths(...)` in `src/api_doc.rs`. Add any new schema types to `components(schemas(...))`.
+4. **Register the route**: Add the route in `src/router.rs` via `build_router(...)`.
 5. **Update contracts**: Add or update the corresponding Markdown contract in `specs/*/contracts/`.
 6. **Coverage test**: Update the `DOCUMENTED_PATH_METHODS` constant in `tests/openapi_coverage.rs`.
 7. **Run validation**: `cargo test` — the coverage and consistency tests will verify the new endpoint is documented and matches its contracts.
@@ -40,7 +40,7 @@ The `SwaggerUi` mount in `main.rs` serves both the JSON document and the interac
 
 ## Removing An Endpoint
 
-1. Remove the route from `main.rs`.
+1. Remove the route from `src/router.rs`.
 2. Remove the handler and its `#[utoipa::path]` annotation.
 3. Remove the `__path_*` import and function reference from `ApiDoc::paths(...)`.
 4. Remove any DTOs that are no longer used from `ApiDoc::components(schemas(...))`.
@@ -64,7 +64,7 @@ The following checks run automatically via `cargo test`:
 |-----------|-------------------|
 | `tests/openapi_validity.rs` | Spec is structurally valid, has all DTOs, has security scheme |
 | `tests/openapi_coverage.rs` | Every documented endpoint is present in the spec; `/metrics` is absent |
-| `tests/responses_serde.rs` | All response DTOs serialize and deserialize correctly |
+| `crates/auth/tests/responses_serde_test.rs` | All response DTOs serialize and deserialize correctly |
 | `tests/markdown_contract_consistency.rs` | Generated spec matches `specs/*/contracts/*.md` on endpoints, methods, and status codes |
 
 To run manually:
@@ -73,7 +73,7 @@ To run manually:
 cargo test --test openapi_validity
 cargo test --test openapi_coverage
 cargo test --test markdown_contract_consistency
-cargo test --test responses_serde
+cargo test -p app-home-auth --test responses_serde_test
 ```
 
 For external validation:
@@ -104,7 +104,7 @@ All `#[schema(example = ...)]` values MUST be obvious placeholders:
 
 ## Adding a New Schema Type
 
-1. Define the struct with `#[derive(Serialize, Deserialize, ToSchema)]` in `src/adapters/inbound/responses.rs` (or alongside the handler).
+1. Define the struct with `#[derive(Serialize, Deserialize, ToSchema)]` in the inbound adapter's `responses.rs` (e.g. `crates/auth/src/adapters/inbound/responses.rs`, or alongside the handler).
 2. Add it to `components(schemas(...))` in `ApiDoc`.
 3. Add non-sensitive `#[schema(example = ...)]` values to each field.
 

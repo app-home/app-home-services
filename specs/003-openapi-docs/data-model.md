@@ -4,9 +4,9 @@
 
 This feature introduces no database entities. The "data model" here is the set of
 **HTTP wire DTOs** and the **OpenAPI document metadata** that the specification is
-generated from. All types live in the inbound adapter layer (`src/adapters/inbound/`)
-and derive `serde::Serialize`/`Deserialize` and `utoipa::ToSchema`. The domain and
-application layers are unchanged.
+generated from. All types live in the inbound adapter layers of the bounded contexts
+(e.g. `crates/auth/src/adapters/inbound/`) and derive `serde::Serialize`/`Deserialize`
+and `utoipa::ToSchema`. The domain and application layers are unchanged.
 
 ---
 
@@ -25,7 +25,7 @@ application layers are unchanged.
 
 ---
 
-## Response DTOs (new — `src/adapters/inbound/responses.rs`)
+## Response DTOs (new — `crates/auth/src/adapters/inbound/responses.rs`)
 
 All derive `#[derive(Serialize, ToSchema)]`. Field names & values are **identical** to the
 current `serde_json::json!` output to preserve the wire contract.
@@ -96,7 +96,7 @@ No serde/schema derives are added to these internal types.
 | Type | HTTP, scheme = `bearer`, `bearerFormat = JWT` |
 | Placement | `Authorization: Bearer <access_token>` header |
 | Applied to | `logout` only (the sole endpoint gated by `AuthenticatedUser`) |
-| Source of truth | `auth_middleware.rs:38-51` |
+| Source of truth | `crates/shared/src/auth.rs` (AuthenticatedUser / JwtVerification) |
 
 ---
 

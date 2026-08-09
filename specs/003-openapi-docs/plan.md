@@ -69,43 +69,41 @@ specs/003-openapi-docs/
 ### Source Code (repository root)
 
 ```text
+crates/auth/src/adapters/inbound/    # auth HTTP handlers (CHANGED: + ToSchema / #[utoipa::path])
+├── login_routes.rs       # ToSchema on PasswordLoginRequest; #[utoipa::path]; typed response DTO
+├── oauth_callback.rs     # ToSchema on GoogleLoginRequest; #[utoipa::path]; typed response DTO
+├── logout_routes.rs      # ToSchema on LogoutRequest; #[utoipa::path]; typed response DTO
+├── refresh_routes.rs     # ToSchema on RefreshTokenRequest; #[utoipa::path]; typed response DTO
+├── responses.rs          # NEW: auth response DTOs (AuthTokens, GoogleAuth, Status, Error)
+
+crates/shared/src/
+├── auth.rs                        # JWT extraction (AuthenticatedUser) — documented as Bearer security
+└── config/settings.rs             # UNCHANGED
+
+crates/admin/src/adapters/inbound/ # admin handlers (admin_routes.rs, responses.rs: + ToSchema)
+crates/profiles/src/adapters/inbound/  # profiles handlers (+ ToSchema)
+
 src/
-├── domain/                       # UNCHANGED (no schema derives leak here)
-│   ├── entities/
-│   └── errors.rs
-├── application/                  # UNCHANGED
-│   ├── ports/
-│   └── use_cases/
-├── adapters/
-│   ├── inbound/
-│   │   ├── login_routes.rs       # + ToSchema on PasswordLoginRequest; #[utoipa::path]; typed response DTO
-│   │   ├── oauth_callback.rs      # + ToSchema on GoogleLoginRequest; #[utoipa::path]; typed response DTO
-│   │   ├── logout_routes.rs       # + ToSchema on LogoutRequest; #[utoipa::path]; typed response DTO
-│   │   ├── refresh_routes.rs      # + ToSchema on RefreshTokenRequest; #[utoipa::path]; typed response DTO
-│   │   ├── auth_middleware.rs      # (documented as Bearer security; behavior unchanged)
-│   │   ├── responses.rs           # NEW: shared response DTOs (AuthTokens, ErrorResponse, StatusResponse, HealthResponse)
-│   │   └── api_doc.rs             # NEW: #[derive(OpenApi)] ApiDoc + Bearer security scheme modifier
-│   └── outbound/                  # UNCHANGED
-├── infrastructure/               # UNCHANGED
-└── main.rs                       # + mount SwaggerUi + /api-docs/openapi.json; #[utoipa::path] on health_check
+├── api_doc.rs                     # NEW: combined #[derive(OpenApi)] ApiDoc + Bearer security scheme modifier
+├── health.rs                      # health_check: #[utoipa::path]
+├── router.rs                      # build_router: mounts SwaggerUi + /api-docs/openapi.json
+└── main.rs                        # composition root (route wiring + server)
 
 tests/
-├── openapi_spec_test.rs          # NEW: spec served, valid OpenAPI, security scheme present
-├── openapi_coverage_test.rs      # NEW: every routed public endpoint appears in the spec
-└── docs_contract_consistency_test.rs  # NEW: spec vs specs/*/contracts alignment (endpoints/methods/status codes)
-
-scripts/
-└── (optional) check-docs-consistency  # Wraps the consistency test for CI/build workflow
+├── openapi_spec_served.rs         # NEW: spec served, valid OpenAPI, security scheme present
+├── openapi_validity.rs            # NEW: structural OpenAPI-3.x validation
+├── openapi_coverage.rs            # NEW: every routed public endpoint appears in the spec
+└── markdown_contract_consistency.rs  # NEW: spec vs specs/*/contracts alignment (endpoints/methods/status codes)
 ```
 
-**Structure Decision**: Modular Rust monolith following the existing hexagonal layout mandated by the constitution. All new code is confined to `src/adapters/inbound/` (DTOs + `ApiDoc`) and `src/main.rs` (route wiring), plus `tests/`. No changes to `domain/`, `application/`, `infrastructure/`, or the database. This keeps the OpenAPI concern entirely in the inbound adapter, preserving the inward dependency rule.
+**Structure Decision**: Modular Rust monolith following the existing hexagonal layout mandated by the constitution. DTOs and `#[utoipa::path]` annotations are added to the inbound adapters of the `auth` context (`crates/auth/src/adapters/inbound/`), the admin/profile contexts, and the combined `ApiDoc` lives in the top-level `src/api_doc.rs` composition root (which also owns `router.rs` / `health.rs`). No changes to `domain/`, `application/`, `infrastructure/`, or the database. This keeps the OpenAPI concern in the inbound adapters plus the composition root, preserving the inward dependency rule.
 
 ## Key Design Decisions (feed Phase 0 / Phase 1)
 
 1. **Typed response DTOs replace `serde_json::json!`**: Introduce `AuthTokensResponse` (login/refresh), `GoogleAuthResponse` (adds `is_new_user`), `StatusResponse` (logout), `HealthResponse`, and a shared `ErrorResponse { error: String }`. This is required because `utoipa` needs typed schemas; it also improves type safety. Handlers change return shape but not status codes or JSON field names (backward compatible).
-2. **Logout auth-rejection shape**: `auth_middleware.rs` currently returns plain-text `"Unauthorized"` (401), NOT JSON. The spec must document logout's 401 accurately (plain text) — or the rejection is refactored to emit `ErrorResponse` JSON for consistency. **Decision deferred to research.md** (documentation-only vs. small behavior-normalizing refactor); default recommendation is to normalize to JSON `ErrorResponse` for a consistent contract, noting it as a minor behavior change.
+2. **Logout auth-rejection shape**: `crates/shared/src/auth.rs` (`AuthRejection`) currently returns plain-text `"Unauthorized"` (401), NOT JSON. The spec must document logout's 401 accurately (plain text) — or the rejection is refactored to emit `ErrorResponse` JSON for consistency. **Decision deferred to research.md** (documentation-only vs. small behavior-normalizing refactor); default recommendation is to normalize to JSON `ErrorResponse` for a consistent contract, noting it as a minor behavior change.
 3. **`/metrics` excluded** from the OpenAPI document (Prometheus text format); `/api/health` included. Recorded per FR-015.
-4. **CORS/exposure**: Swagger UI assets are served by the app; verify the configured-origins branch (`main.rs:96-109`, GET/POST only) does not block UI/spec GETs, and that adding the routes does not broaden access to auth endpoints.
+4. **CORS/exposure**: Swagger UI assets are served by the app; verify the configured-origins branch (`src/cors.rs`, GET/POST only) does not block UI/spec GETs, and that adding the routes does not broaden access to auth endpoints.
 5. **Consistency mechanism (FR-011/FR-012)**: A test-time check that (a) enumerates the router's public endpoints and asserts each is present in `ApiDoc` (coverage guard), and (b) parses the `specs/*/contracts/*.md` front matter/paths and compares endpoint+method+status-code sets against the generated spec. Runs under `cargo test` so it gates releases via the existing workflow.
 
 ## Phase 0 — Research (research.md)
