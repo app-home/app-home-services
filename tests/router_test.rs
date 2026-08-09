@@ -470,6 +470,11 @@ async fn cors_preflight_gets_security_headers_too() {
     )
     .await;
 
+    // The security-header layers set headers on any response (even a 404), so
+    // this only proves the preflight was accepted and answered by CORS if the
+    // status itself is the pass/fail signal first.
+    assert_eq!(response.status(), StatusCode::OK);
+
     let headers = response.headers();
     assert_eq!(
         headers
