@@ -90,6 +90,12 @@ fn error_counter_mirrors(
 /// 15 seconds to publish nothing is not worth spawning per backend. When every
 /// component is on its in-memory backend there is nothing to mirror at all, so
 /// no task is spawned.
+///
+/// Must be called after the metrics recorder is installed: `error_counter_mirrors`
+/// resolves the `Counter` handles eagerly here, and handles resolved against the
+/// no-op recorder stay no-ops for the lifetime of the task (the gauges in
+/// `spawn_db_pool_metrics_poller` are resolved inside the loop and don't share
+/// this constraint). `main` installs the recorder before anything is spawned.
 pub fn spawn_backend_error_counter_poller(
     rate_limiters: RateLimiterErrorCounters,
     blacklist: AccessTokenBlacklistErrorCounter,

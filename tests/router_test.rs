@@ -411,3 +411,84 @@ async fn the_metrics_allowlist_does_not_leak_onto_other_routes() {
         "a non-allowlisted peer should get normal routing everywhere except /metrics"
     );
 }
+
+/// Builds a CORS preflight (`OPTIONS`) request: the method the client wants to
+/// send in `requested_method`, from `origin`, asking for the `Authorization`
+/// header.
+fn preflight(origin: &str, requested_method: &str) -> Request<Body> {
+    Request::builder()
+        .method("OPTIONS")
+        .uri("/api/profile")
+        .header("origin", origin)
+        .header("access-control-request-method", requested_method)
+        .header("access-control-request-headers", "authorization")
+        .body(Body::empty())
+        .expect("preflight request should build")
+}
+
+#[tokio::test]
+async fn cors_preflight_allows_put_on_configured_origin() {
+    // `/api/profile` is `put` and `/api/admin/users/{id}/role` is `put`, so a
+    // cross-origin client must be able to preflight `PUT` -- not just
+    // `GET`/`POST` (see #191).
+    let response = send(
+        router(RouterOptions {
+            cors_allowed_origins: "https://app.example",
+            ..RouterOptions::default()
+        }),
+        preflight("https://app.example", "PUT"),
+        loopback(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let allowed = response
+        .headers()
+        .get("access-control-allow-methods")
+        .and_then(|v| v.to_str().ok())
+        .expect("a preflight from an allowed origin must advertise allowed methods");
+    assert!(
+        allowed.split(',').any(|m| m.trim() == "PUT"),
+        "the preflight must allow PUT, got {allowed:?}"
+    );
+}
+
+#[tokio::test]
+async fn cors_preflight_gets_security_headers_too() {
+    // tower-http's `CorsLayer` answers a valid preflight directly without
+    // calling the inner service, so the security-header layers must wrap CORS
+    // (not the other way around) for them to reach the preflight response --
+    // see `build_router`.
+    let response = send(
+        router(RouterOptions {
+            cors_allowed_origins: "https://app.example",
+            ..RouterOptions::default()
+        }),
+        preflight("https://app.example", "POST"),
+        loopback(),
+    )
+    .await;
+
+    let headers = response.headers();
+    assert_eq!(
+        headers
+            .get("strict-transport-security")
+            .and_then(|v| v.to_str().ok()),
+        Some("max-age=31536000; includeSubDomains")
+    );
+    assert_eq!(
+        headers
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    assert_eq!(
+        headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
+        Some("DENY")
+    );
+    assert_eq!(
+        headers.get("referrer-policy").and_then(|v| v.to_str().ok()),
+        Some("strict-origin-when-cross-origin")
+    );
+}

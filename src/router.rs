@@ -33,17 +33,32 @@ use crate::security_headers::apply_security_headers;
 /// constructed collaborators with no meaningful ordering between them, so named
 /// fields at the call site beat positional arguments that are easy to transpose.
 pub struct RouterDeps {
+    /// The auth `AppState` backing every auth route's handler (repos, JWT,
+    /// rate limiters, event bus). Owned here and moved into the router.
     pub state: auth::AppState,
+    /// Profile repo injected into the profile routes' `Extension`. Coerced to
+    /// `Arc<dyn ProfileRepository>` at the call site so the `Extension` key
+    /// matches what the profiles handlers extract.
     pub profile_repo: Arc<dyn ProfileRepository>,
+    /// Admin repo injected into the admin routes' `Extension`, same `Arc<dyn>`
+    /// coercion rationale as `profile_repo`.
     pub admin_repo: Arc<dyn AdminRepository>,
+    /// Shared JWT verification (secret + iss/aud) for the `AuthenticatedUser`
+    /// extractor on every protected route. See #87.
     pub verification: Arc<JwtVerification>,
+    /// Shared access-token revocation list: every protected route's
+    /// `AuthenticatedUser` extractor consults it and the logout handler writes
+    /// to it (see #88, #140).
     pub access_token_blacklist: Arc<dyn AccessTokenBlacklist>,
     /// `/api/health` runs a real `SELECT 1` against the pool (see
     /// `crate::health`), so it needs its own handle to it. Cloning a `PgPool` is
     /// cheap (it wraps an `Arc` internally), not a second pool.
     pub health_check_pool: sqlx::PgPool,
+    /// Render handle for the installed Prometheus recorder; serves `/metrics`.
     pub metrics_handle: PrometheusHandle,
+    /// IP-allowlist configuration gating `/metrics` via `metrics_ip_allowlist`.
     pub metrics_guard_config: MetricsGuardConfig,
+    /// CORS policy layer built from `CORS_ALLOWED_ORIGINS` (see `crate::cors`).
     pub cors: CorsLayer,
     /// `ENABLE_SWAGGER`; see the conditional merge below for why the docs routes
     /// are opt-in.
@@ -134,5 +149,12 @@ pub fn build_router(deps: RouterDeps) -> Router {
     // HTTP security headers (see #90) -- see
     // `security_headers::apply_security_headers` for why each is set and why
     // HSTS is emitted unconditionally.
-    apply_security_headers(app).layer(cors).with_state(state)
+    //
+    // `layer(cors)` is applied before `apply_security_headers`, so the header
+    // layers sit *outside* CORS. tower-http's `CorsLayer` short-circuits valid
+    // `OPTIONS` preflight requests and answers them directly without ever
+    // calling the inner service; with the opposite ordering those preflight
+    // responses would bypass the security headers entirely. Wrapping CORS with
+    // the header layers keeps the latter on every response, preflight included.
+    apply_security_headers(app.layer(cors)).with_state(state)
 }

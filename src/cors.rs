@@ -30,7 +30,13 @@ pub fn build_cors_layer(allowed_origins: &str) -> CorsLayer {
 
     CorsLayer::new()
         .allow_origin(AllowOrigin::list(origins))
-        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            // PUT /api/profile and PUT /api/admin/users/{id}/role are part of
+            // the route table, so a preflight for them must not be rejected.
+            axum::http::Method::PUT,
+        ])
         .allow_headers([
             axum::http::header::CONTENT_TYPE,
             axum::http::header::AUTHORIZATION,
