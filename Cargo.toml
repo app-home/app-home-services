@@ -47,6 +47,9 @@ utoipa-swagger-ui = { version = "9", features = ["axum"] }
 [dev-dependencies]
 tokio-test = "0.4"
 async-trait = "0.1"
+# `ServiceExt::oneshot`, for driving the router in-process in tests/router_test.rs
+# without binding a port or starting a server (see #191).
+tower = { version = "0.5", features = ["util"] }
 # Self-signed cert generation for the native-TLS smoke test (tests run offline,
 # no openssl dependency on any platform).
 rcgen = "0.13"

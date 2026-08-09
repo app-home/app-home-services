@@ -1,49 +1,32 @@
 use std::net::SocketAddr;
-use std::sync::atomic::Ordering;
-use std::time::Duration;
 
 use std::sync::Arc;
 
-use axum::{
-    Extension,
-    routing::{get, post, put},
-};
 use shared::auth::JwtVerification;
-use utoipa::OpenApi;
 
-use admin::adapters::inbound::admin_routes::{
-    get_user_handler, list_users_handler, update_user_role_handler,
-};
 use admin::adapters::outbound::postgres_admin_repo::PostgresAdminRepo;
 use admin::application::ports::admin_repository::AdminRepository;
-use app_home_services::api_doc::ApiDoc;
-use app_home_services::health::health_check;
-use app_home_services::infrastructure::access_token_blacklist::durable::DurableRevocationBlacklist;
-use app_home_services::infrastructure::access_token_blacklist_setup::{
-    AccessTokenBlacklistErrorCounter, build_access_token_blacklist,
-};
+use app_home_services::cors::build_cors_layer;
+use app_home_services::infrastructure::access_token_blacklist_setup::build_access_token_blacklist;
 use app_home_services::infrastructure::config::Settings;
-use app_home_services::infrastructure::metrics_guard::{MetricsGuardConfig, metrics_ip_allowlist};
-use app_home_services::infrastructure::rate_limiter_setup::{
-    RateLimiterErrorCounters, build_rate_limiters,
+use app_home_services::infrastructure::metrics_guard::MetricsGuardConfig;
+use app_home_services::infrastructure::rate_limiter_setup::build_rate_limiters;
+use app_home_services::infrastructure::telemetry::pollers::{
+    spawn_access_token_revocation_flusher, spawn_backend_error_counter_poller,
+    spawn_db_pool_metrics_poller,
 };
+use app_home_services::router::{RouterDeps, build_router};
 use auth::adapters::audit_event_handler::AuditEventHandler;
 use auth::adapters::google_auth_provider::GoogleAuthProvider;
-use auth::adapters::inbound::login_routes::login_password_handler;
-use auth::adapters::inbound::logout_routes::logout_handler;
-use auth::adapters::inbound::oauth_callback::login_google_handler;
-use auth::adapters::inbound::refresh_routes::refresh_token_handler;
 use auth::adapters::jwt_service::JwtServiceImpl;
 use auth::adapters::postgres_session_repo::PostgresSessionRepo;
 use auth::adapters::postgres_user_directory::PostgresUserDirectory;
 use auth::adapters::postgres_user_repo::PostgresUserRepo;
 use auth::config::auth_settings::AuthSettings;
-use profiles::adapters::inbound::profile_routes::{get_profile_handler, update_profile_handler};
 use profiles::adapters::outbound::postgres_profile_repo::PostgresProfileRepo;
 use profiles::application::ports::profile_repository::ProfileRepository;
 use shared::event_bus::EventBus;
 use shared::user_directory::UserDirectory;
-use utoipa_swagger_ui::SwaggerUi;
 
 #[tokio::main]
 async fn main() {
@@ -167,8 +150,6 @@ async fn main() {
             .await
             .expect("Failed to set up rate limiters");
 
-    spawn_rate_limiter_metrics_poller(rate_limiter_error_counters);
-
     // See build_access_token_blacklist's docs for why REDIS_URL selects the
     // backend, and why (unlike the rate limiters) an unreachable Redis falls back
     // to in-memory at startup rather than aborting -- the blacklist check fails
@@ -177,7 +158,9 @@ async fn main() {
     let (access_token_blacklist, blacklist_error_counter, revocation_flusher) =
         build_access_token_blacklist(&settings, &pool).await;
 
-    spawn_access_token_blacklist_metrics_poller(blacklist_error_counter);
+    // Both backends' error counters are mirrored by one task -- see
+    // `spawn_backend_error_counter_poller`.
+    spawn_backend_error_counter_poller(rate_limiter_error_counters, blacklist_error_counter);
 
     if let Some(flusher) = revocation_flusher {
         spawn_access_token_revocation_flusher(flusher, settings.revocation_flush_interval_seconds);
@@ -231,88 +214,20 @@ async fn main() {
         settings.trusted_proxy_ips.clone(),
     );
 
-    let cors = {
-        let origins_str = &settings.cors_allowed_origins;
-        if origins_str.is_empty() {
-            tracing::info!("CORS: same-origin only (no origins configured)");
-            tower_http::cors::CorsLayer::new().allow_origin(tower_http::cors::AllowOrigin::list(
-                Vec::<axum::http::HeaderValue>::new(),
-            ))
-        } else {
-            let origins: Vec<axum::http::HeaderValue> = origins_str
-                .split(',')
-                .filter_map(|o| o.trim().parse::<axum::http::HeaderValue>().ok())
-                .collect();
-            tracing::info!(?origins, "CORS: configured origins");
-            tower_http::cors::CorsLayer::new()
-                .allow_origin(tower_http::cors::AllowOrigin::list(origins))
-                .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-                .allow_headers([
-                    axum::http::header::CONTENT_TYPE,
-                    axum::http::header::AUTHORIZATION,
-                ])
-        }
-    };
+    let cors = build_cors_layer(&settings.cors_allowed_origins);
 
-    // Kept as its own sub-router (merged below) rather than a plain `.route()` on the
-    // main router, so the IP allowlist middleware/Extension only ever apply to
-    // `/metrics` -- not to every other route on the service.
-    let metrics_router = axum::Router::new()
-        .route(
-            "/metrics",
-            get(move || std::future::ready(metrics_handle.render())),
-        )
-        .layer(axum::middleware::from_fn(metrics_ip_allowlist))
-        .layer(Extension(metrics_guard_config));
-
-    let mut app = axum::Router::new()
-        .route("/api/auth/login/password", post(login_password_handler))
-        .route("/api/auth/login/google", post(login_google_handler))
-        .route("/api/auth/logout", post(logout_handler))
-        .route("/api/auth/refresh", post(refresh_token_handler))
-        .route("/api/health", get(health_check))
-        .route(
-            "/api/profile",
-            get(get_profile_handler).put(update_profile_handler),
-        )
-        .route("/api/admin/users", get(list_users_handler))
-        .route("/api/admin/users/{id}", get(get_user_handler))
-        .route("/api/admin/users/{id}/role", put(update_user_role_handler))
-        .layer(Extension(profile_repo))
-        .layer(Extension(admin_repo))
-        .layer(Extension(verification))
-        // Shared access token revocation list: every protected route's
-        // `AuthenticatedUser` extractor rejects tokens whose `jti` was revoked
-        // (e.g. at logout, see #88), and the logout handler itself uses it to
-        // revoke the presented token.
-        .layer(Extension(access_token_blacklist))
-        // /api/health runs a real `SELECT 1` against the pool (see src/health.rs),
-        // so it needs its own handle to it -- this clone is cheap (PgPool wraps an
-        // Arc internally), not a second pool.
-        .layer(Extension(health_check_pool))
-        // Prometheus scrape endpoints are conventionally reached only from inside a
-        // private network / the cluster's monitoring namespace, never exposed
-        // publicly. `/metrics` is still unauthenticated (no credentials required),
-        // but is now additionally gated by an IP allowlist when METRICS_ALLOWED_IPS
-        // is configured -- see crates/infrastructure/src/metrics_guard.rs and #83.
-        .merge(metrics_router);
-
-    // Swagger UI and the OpenAPI spec are only registered when explicitly
-    // enabled (ENABLE_SWAGGER=true) -- see #86. Without the flag both routes
-    // return 404, so a publicly reachable instance exposes no API surface via
-    // docs. `ApiDoc::openapi()` is a generated static spec, so this conditional
-    // has no runtime cost beyond an already-generated constant.
-    if settings.enable_swagger {
-        app = app
-            .merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()));
-    }
-
-    // HTTP security headers (see #90) -- see
-    // `security_headers::apply_security_headers` for why each is set and why
-    // HSTS is emitted unconditionally.
-    let app = app_home_services::security_headers::apply_security_headers(app)
-        .layer(cors)
-        .with_state(state);
+    let app = build_router(RouterDeps {
+        state,
+        profile_repo,
+        admin_repo,
+        verification,
+        access_token_blacklist,
+        health_check_pool,
+        metrics_handle,
+        metrics_guard_config,
+        cors,
+        enable_swagger: settings.enable_swagger,
+    });
 
     tracing::info!(address = %addr, "Listening");
 
@@ -369,132 +284,6 @@ async fn main() {
     }
 }
 
-/// Spawns a background task that, every 15 seconds, reads the shared Postgres
-/// pool's current size/idle-connection counts and publishes them as
-/// `db_pool_size` and `db_pool_idle` gauges to the installed Prometheus recorder
-/// (see #100).
-///
-/// `PgPool::size`/`num_idle` are cheap, synchronous, in-memory reads (no query
-/// against the database), so polling them costs nothing beyond the interval
-/// tick itself. `db_pool_size - db_pool_idle` is the number of connections
-/// currently checked out; that approaching `DB_MAX_CONNECTIONS` is the signal
-/// for pool exhaustion this metric exists to make visible (previously there was
-/// none -- a caller could only infer trouble indirectly, e.g. via
-/// `DB_ACQUIRE_TIMEOUT_SECONDS` errors after the fact).
-fn spawn_db_pool_metrics_poller(pool: sqlx::PgPool) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-
-            metrics::gauge!("db_pool_size").set(pool.size() as f64);
-            metrics::gauge!("db_pool_idle").set(pool.num_idle() as f64);
-        }
-    });
-}
-
-/// Spawns a background task that, every 15 seconds, reads each rate limiter's Redis
-/// error counter (if it has one -- see `RateLimiterErrorCounters`) and publishes it
-/// as `rate_limiter_redis_errors_total{scope="login"|"refresh"}` to the installed
-/// Prometheus recorder.
-///
-/// Uses `Counter::absolute` (not `increment`) since `counter` is already the
-/// cumulative total maintained independently inside `RedisRateLimiter` -- this task
-/// just mirrors that value into the metrics recorder on an interval, rather than
-/// tracking its own delta.
-///
-/// A no-op for a scope currently on the in-memory backend (`counters.login`/`refresh`
-/// is `None`), since there's nothing to poll there.
-fn spawn_rate_limiter_metrics_poller(counters: RateLimiterErrorCounters) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-
-            if let Some(counter) = &counters.login {
-                let value = counter.load(Ordering::Relaxed);
-                metrics::counter!("rate_limiter_redis_errors_total", "scope" => "login")
-                    .absolute(value);
-            }
-            if let Some(counter) = &counters.refresh {
-                let value = counter.load(Ordering::Relaxed);
-                metrics::counter!("rate_limiter_redis_errors_total", "scope" => "refresh")
-                    .absolute(value);
-            }
-        }
-    });
-}
-
-/// Spawns a background task that, every 15 seconds, reads the access token
-/// blacklist's Redis error counter (if it has one -- see
-/// `AccessTokenBlacklistErrorCounter`) and publishes it as
-/// `access_token_blacklist_redis_errors_total` to the installed Prometheus
-/// recorder.
-///
-/// Mirrors `spawn_rate_limiter_metrics_poller` (same `absolute`, not `increment`,
-/// since the counter is already the cumulative total held inside
-/// `RedisAccessTokenBlacklist`). A no-op on the in-memory backend.
-fn spawn_access_token_blacklist_metrics_poller(counter: AccessTokenBlacklistErrorCounter) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(15));
-        loop {
-            interval.tick().await;
-
-            if let Some(counter) = &counter.redis {
-                let value = counter.load(Ordering::Relaxed);
-                metrics::counter!("access_token_blacklist_redis_errors_total").absolute(value);
-            }
-        }
-    });
-}
-
-/// Spawns the durable-revocation flush worker: retries every journaled access
-/// token revocation (`access_token_revocation_outbox`, see #140 and
-/// `DurableRevocationBlacklist`) against Redis on an interval, publishing the
-/// current backlog as `access_token_revocation_outbox_pending` after each sweep.
-///
-/// The first `tokio::time::interval` tick fires immediately, so any backlog that
-/// accumulated while the process was down is retried right at startup, not after
-/// the first full interval. `interval_secs` comes from
-/// `REVOCATION_FLUSH_INTERVAL_SECONDS` and is clamped to a minimum of 1 second
-/// (`interval` panics on a zero duration; a misconfigured 0 would otherwise kill
-/// the task -- and this worker, not the request path, is the right thing to
-/// protect here).
-fn spawn_access_token_revocation_flusher(
-    flusher: Arc<DurableRevocationBlacklist>,
-    interval_secs: u64,
-) {
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(Duration::from_secs(interval_secs.max(1)));
-        // Default (Burst) replays every missed tick back-to-back with no delay
-        // between them if a sweep ever runs longer than the interval. A large
-        // outbox backlog is exactly the condition that makes a long sweep
-        // likely, so Burst would pile consecutive sweeps against Postgres/Redis
-        // right when they're already under the most load. Delay instead waits a
-        // full interval after each sweep before the next one, regardless of how
-        // long that sweep took.
-        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-        loop {
-            interval.tick().await;
-
-            match flusher.flush_pending().await {
-                Ok(remaining) => {
-                    metrics::gauge!("access_token_revocation_outbox_pending").set(remaining as f64);
-                }
-                Err(e) => {
-                    // Postgres was unreachable for the sweep itself. The gauge is
-                    // left at its last known value rather than reset to 0, so a
-                    // genuine backlog isn't hidden by a failed sweep.
-                    tracing::error!(
-                        error = %e,
-                        "Access token revocation outbox flush failed (will retry on the next sweep)"
-                    );
-                }
-            }
-        }
-    });
-}
-
 async fn run_migrations(pool: &sqlx::PgPool) -> Result<(), sqlx::migrate::MigrateError> {
     sqlx::migrate!("./migrations").run(pool).await
 }
@@ -514,7 +303,17 @@ async fn seed_default_user(
         return Ok(true);
     }
 
-    let password_hash = bcrypt::hash(&settings.default_user_password, settings.bcrypt_cost)
+    // Off the async runtime's worker threads and bounded process-wide (see
+    // #175), same as every other bcrypt call in this codebase -- this only runs
+    // once at startup, but there's no reason for it to be the one bcrypt call
+    // that bypasses the shared policy.
+    let password_owned = settings.default_user_password.clone();
+    let cost = settings.bcrypt_cost;
+    let password_hash = settings
+        .bcrypt_limiter
+        .run_bounded(move || bcrypt::hash(password_owned, cost))
+        .await
+        .map_err(|e| format!("bcrypt task failed: {e}"))?
         .map_err(|e| format!("password hashing failed: {e}"))?;
 
     let id = uuid::Uuid::now_v7();

@@ -30,11 +30,22 @@ pub async fn login_with_password(
     // Verify against the existing user when found, otherwise against the
     // precomputed dummy hash for the same cost, so a username-not-found login
     // takes ~the same time as a wrong-password login (timing safety).
-    let password_ok = verify_password_timing_safe(
-        aggregate.as_ref().map(|a| a.user()),
-        password,
-        settings.bcrypt_cost,
-    );
+    //
+    // Off the async runtime's worker threads and bounded process-wide (see
+    // #175) -- `verify_password_timing_safe` is synchronous, CPU-bound bcrypt
+    // work, so calling it inline here would block whichever Tokio worker
+    // thread is running this task for the duration. `user` is cloned into an
+    // owned value (rather than borrowed) because the closure below must be
+    // `'static` to run on `spawn_blocking`'s thread pool.
+    let user_owned = aggregate.as_ref().map(|a| a.user().clone());
+    let password_owned = password.to_string();
+    let cost = settings.bcrypt_cost;
+    let password_ok = settings
+        .bcrypt_limiter
+        .run_bounded(move || {
+            verify_password_timing_safe(user_owned.as_ref(), &password_owned, cost)
+        })
+        .await?;
     if !password_ok {
         return Err(AuthError::InvalidCredentials);
     }
@@ -56,8 +67,15 @@ async fn create_session_tokens(
     let expires_at =
         chrono::Utc::now() + chrono::Duration::days(settings.refresh_token_expiry_days);
 
+    // See the bounded-hash comment in `login_with_password` above -- same
+    // reasoning applies to hashing the new refresh token.
+    let refresh_token_owned = token_pair.refresh_token.clone();
+    let cost = settings.bcrypt_cost;
     let refresh_hash = HashedPassword::new(
-        bcrypt::hash(&token_pair.refresh_token, settings.bcrypt_cost)
+        settings
+            .bcrypt_limiter
+            .run_bounded(move || bcrypt::hash(refresh_token_owned, cost))
+            .await?
             .map_err(|_| AuthError::TokenGenerationFailed)?,
     )
     .map_err(|_| AuthError::TokenGenerationFailed)?;

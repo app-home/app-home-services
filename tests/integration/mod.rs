@@ -70,14 +70,16 @@ pub(crate) async fn test_pool() -> &'static PgPool {
     .await
 }
 
+// CORS, `/metrics` reachability and security headers moved to
+// `tests/router_test.rs` (see #191): they assert router-level behaviour, which
+// is now testable in-process against `build_router` -- no live server, and they
+// actually run in CI, which the `#[ignore]`d versions here never did.
 mod access_token_revocation_outbox_test;
-mod cors_test;
 mod database_test;
 mod health_test;
 mod login_google_test;
 mod login_password_test;
 mod logout_test;
-mod metrics_test;
 mod migration_recovery_test;
 mod rate_limit_test;
 mod redis_access_token_blacklist_test;
@@ -87,5 +89,4 @@ mod redis_rate_limit_test;
 mod redis_startup_test;
 mod refresh_rate_limit_test;
 mod refresh_test;
-mod security_headers_test;
 mod startup_test;

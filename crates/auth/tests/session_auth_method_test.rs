@@ -22,6 +22,7 @@ use auth::domain::entities::session::{NewSession, Session};
 use auth::domain::entities::user::{NewUser, User};
 use auth::domain::entities::user_action::{NewUserAction, UserAction};
 use auth::domain::errors::AuthError;
+use auth::domain::services::bcrypt_task::BcryptLimiter;
 
 type SharedSessions = std::sync::Arc<Mutex<HashMap<Uuid, Session>>>;
 
@@ -221,6 +222,9 @@ impl JwtService for MockJwtService {
     }
 }
 
+const TEST_BCRYPT_COST: u32 = 4;
+const TEST_BCRYPT_MAX_CONCURRENT: usize = 4;
+
 fn test_settings() -> AuthSettings {
     AuthSettings {
         default_user_username: "admin".to_string(),
@@ -233,10 +237,10 @@ fn test_settings() -> AuthSettings {
         access_token_expiry_minutes: 15,
         refresh_token_expiry_days: 7,
         bcrypt_cost: TEST_BCRYPT_COST,
+        bcrypt_max_concurrent: TEST_BCRYPT_MAX_CONCURRENT,
+        bcrypt_limiter: BcryptLimiter::new(TEST_BCRYPT_MAX_CONCURRENT),
     }
 }
-
-const TEST_BCRYPT_COST: u32 = 4;
 
 #[tokio::test]
 async fn logout_reports_google_oauth_auth_method_not_password() {

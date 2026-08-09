@@ -95,13 +95,14 @@ impl RedisAccessTokenBlacklist {
 
     /// Cumulative count of Redis errors observed by this instance since startup
     /// (polled into the `access_token_blacklist_redis_errors_total` metric --
-    /// see `spawn_access_token_blacklist_metrics_poller` in `src/main.rs`).
+    /// see `crate::telemetry::pollers`).
     pub fn redis_error_count(&self) -> u64 {
         self.redis_error_count.load(Ordering::Relaxed)
     }
 
     /// Returns a shared handle to the error counter so it can be polled from
-    /// outside this struct (e.g. by the metrics poller in `src/main.rs`)
+    /// outside this struct (e.g. by
+    /// `crate::telemetry::pollers::spawn_backend_error_counter_poller`)
     /// without holding a reference to the whole blacklist.
     pub fn error_counter_handle(&self) -> Arc<AtomicU64> {
         Arc::clone(&self.redis_error_count)
