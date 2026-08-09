@@ -69,13 +69,13 @@ specs/002-audit-security-hardening/
 ### Source Code (repository root)
 
 ```text
-src/
+crates/auth/src/
 ├── domain/
 │   ├── entities/
 │   │   ├── user.rs              # Existing
 │   │   ├── user_action.rs       # Extended (event_type, session_id)
-│   │   ├── session.rs           # NEW
-│   │   └── mod.rs
+│   │   └── session.rs           # NEW
+│   ├── aggregate.rs             # UserAggregate (add_session, invalidate_session, …)
 │   └── errors.rs                # Extended (SessionExpired, RateLimited, etc.)
 │
 ├── application/
@@ -84,13 +84,12 @@ src/
 │   │   ├── login_with_google.rs      # Modified (returns session)
 │   │   ├── record_audit_entry.rs     # Extended (event_type, session_id)
 │   │   ├── logout.rs                 # NEW
-│   │   ├── refresh_token.rs          # NEW
-│   │   └── mod.rs
+│   │   └── refresh_token.rs          # NEW
 │   └── ports/
 │       ├── user_repository.rs        # Extended
 │       ├── session_repository.rs     # NEW
 │       ├── jwt_service.rs            # NEW
-│       ├── rate_limiter.rs           # NEW
+│       ├── auth_provider.rs          # Existing
 │       └── mod.rs
 │
 ├── adapters/
@@ -99,27 +98,40 @@ src/
 │   │   ├── oauth_callback.rs         # Modified (returns tokens)
 │   │   ├── logout_routes.rs          # NEW
 │   │   ├── refresh_routes.rs         # NEW
-│   │   ├── auth_middleware.rs        # NEW
-│   │   └── mod.rs
-│   └── outbound/
-│       ├── postgres_user_repo.rs     # Extended
-│       ├── postgres_session_repo.rs  # NEW
-│       ├── jwt_service.rs            # NEW
-│       ├── memory_rate_limiter.rs    # NEW
-│       ├── google_auth_provider.rs   # Existing
-│       └── mod.rs
+│   │   └── responses.rs              # DTOs (AuthTokensResponse, …)
+│   ├── postgres_user_repo.rs         # Extended
+│   ├── postgres_session_repo.rs      # NEW
+│   ├── jwt_service.rs                # NEW
+│   ├── google_auth_provider.rs       # Existing
+│   └── audit_event_handler.rs        # Publishes audit events via EventBus
 │
-├── infrastructure/
-│   ├── database/
-│   │   ├── db.rs                    # Existing
-│   │   └── mod.rs
-│   ├── config/
-│   │   └── settings.rs              # Extended (new env vars)
-│   └── telemetry/
-│       └── logging.rs               # Existing
-│
-├── lib.rs                           # Extended (AppState)
-└── main.rs                          # Extended (new routes, CORS, hardened startup)
+├── config/
+│   └── auth_settings.rs              # AuthSettings (jwt_secret, expiry, …)
+└── state.rs                          # AppState
+
+crates/shared/src/
+├── config/
+│   └── settings.rs                   # Extended (new env vars, CORS, rate limits)
+├── auth.rs                           # JWT middleware (AuthenticatedUser / JwtVerification)
+├── ports.rs                          # RateLimiter trait
+├── event_bus.rs                      # EventBus
+└── domain/
+    ├── errors.rs
+    └── value_objects/                # RefreshToken, TokenPair, AuthMethod, etc.
+
+crates/infrastructure/src/
+├── database.rs                       # create_pool
+├── rate_limiter/                     # memory.rs, redis.rs
+├── rate_limiter_setup.rs             # build_rate_limiters
+└── telemetry/                        # logging.rs, metrics.rs, pollers.rs
+
+src/
+├── lib.rs                            # re-export layer
+├── main.rs                           # Extended (migrations, seed, hardened startup)
+├── router.rs                         # build_router
+├── cors.rs                           # build_cors_layer
+├── api_doc.rs                        # combined OpenAPI spec
+└── health.rs
 
 migrations/
 ├── 001_create_users_table.sql       # Existing
@@ -127,25 +139,22 @@ migrations/
 ├── 003_create_sessions_table.sql    # NEW
 └── 004_extend_user_actions.sql      # NEW
 
-tests/
-├── unit/
-│   ├── user_test.rs                 # Existing
-│   ├── password_test.rs             # Existing
-│   ├── audit_test.rs                # Existing
-│   ├── session_test.rs              # NEW
-│   └── rate_limiter_test.rs         # NEW
-└── integration/
-    ├── database_test.rs             # Existing
-    ├── login_password_test.rs       # Existing (update)
-    ├── login_google_test.rs         # Existing (update)
-    ├── logout_test.rs               # NEW
-    ├── refresh_test.rs              # NEW
-    ├── rate_limit_test.rs           # NEW
-    ├── cors_test.rs                 # NEW
-    └── startup_test.rs              # NEW
-```
+tests/                                # top-level integration tests
+├── router_test.rs                   # in-process router build + security headers + CORS
+├── openapi_validity.rs
+├── openapi_coverage.rs
+├── openapi_spec_served.rs
+└── markdown_contract_consistency.rs
 
-**Structure Decision**: Single Rust project following existing Hexagonal Architecture. New entities and adapters follow the same patterns as existing code.
+crates/auth/tests/                    # per-crate unit tests
+├── user_test.rs                     # Existing
+├── password_test.rs                 # Existing
+├── audit_test.rs                    # Existing
+├── session_test.rs                  # NEW
+└── …
+crates/infrastructure/tests/
+└── rate_limiter_test.rs             # NEW
+```
 
 ## Complexity Tracking
 

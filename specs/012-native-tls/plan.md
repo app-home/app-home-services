@@ -114,7 +114,8 @@ depends entirely on a reverse proxy for HTTPS. Proposed resolution (confirmed):
 - `cargo build --locked`, `cargo clippy --locked --workspace --all-targets`,
   `cargo fmt --all --check`, `cargo test --locked --workspace`.
 - `scripts/test-with-podman.ps1 -IntegrationOnly`: **53/53** integration tests
-  pass on the plain-HTTP path (no regression), incl. `security_headers_test`.
+  pass on the plain-HTTP path (no regression), incl. the security-header
+  assertions in `tests/router_test.rs`.
 - Automated native-TLS smoke test (`native_tls_smoke_test`) passes as part of
   `cargo test` (no DB/Redis needed), asserting `200` + all security headers
   over a real HTTPS connection with a runtime-generated self-signed cert.

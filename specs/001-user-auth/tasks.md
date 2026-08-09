@@ -24,6 +24,7 @@ description: "Task list for user authentication feature implementation"
 
 - **Single project**: `src/`, `tests/` at repository root
 - Paths below follow the Hexagonal Architecture structure defined in plan.md
+- **Note (post-crate-split)**: These checklist paths pre-date the modular monolith migration (#191). The same code now lives under `crates/auth/src/...`, `crates/shared/src/...`, and `crates/infrastructure/src/...`; see the updated tree in `plan.md` for the current layout.
 
 ---
 

@@ -1,23 +1,16 @@
 <!--
   Sync Impact Report
 
-  Version change: 1.1.0 → 1.2.0
-  Modified principles:
-    - "I. Hexagonal Architecture (NON-NEGOTIABLE)" → clarified that the
-      dependency-direction rule (Adapters → Application → Domain) applies inside
-      each bounded-context crate, not to a single src/ tree, since the project is
-      no longer a single crate
-  Added principles:
-    - "VII. Modular Monolith Boundaries (NON-NEGOTIABLE)" → codifies the
-      one-crate-per-bounded-context structure, the no-direct-cross-context-crate-
-      dependency rule, cross-context ports as the only sanctioned communication
-      path, and per-context data ownership. Grounded in
-      docs/adr/0001-modular-monolith.md.
+  Version change: 1.2.0 → 1.2.1
+  Modified principles: None
   Modified sections:
-    - "Project Structure Standards" → replaced the single-crate src/ tree with the
-      actual Cargo workspace layout (crates/<context>/ + src/ composition root),
-      matching the modular monolith migration completed in PRs #71-#75 and the
-      admin/users decoupling completed 2026-07-23.
+    - "Project Structure Standards" → composition-root (src/) list gains
+      router.rs, cors.rs, and security_headers.rs, which were extracted out of
+      main.rs after the last amendment (CORS #191, security headers #90, both
+      merged); the shared-kernel listing corrects config.rs to its real
+      config/settings.rs and adds net.rs; the bounded-context adapter shape now
+      notes that outbound adapters may live flat under adapters/ (as in auth)
+      rather than only in an outbound/ subdirectory.
   Removed sections: None
   Templates requiring updates:
     - .specify/templates/plan-template.md: ✅ No changes needed (generic
@@ -27,19 +20,10 @@
   Command files (.opencode/commands/): ⚠ Not reviewed in this amendment -- if any
     command hardcodes the old single-crate src/ paths (src/domain/, src/adapters/,
     etc.) rather than crates/<context>/src/..., it should be updated to match.
-  Runtime guidance (README.md, AGENTS.md):
-    - README.md: ✅ Already describes the workspace/crates structure (see
-      Architecture section) -- no changes needed from this amendment.
-    - AGENTS.md: ⚠ Contains a stale fact unrelated to this amendment (says admin
-      "Extends `users` table with `role` column (migration 007)"; as of
-      2026-07-23 this is superseded by migration 008 / the UserDirectory port --
-      see docs/adr/0001-modular-monolith.md). AGENTS.md is auto-updated by
-      opencode tooling, not hand-edited here, so this is flagged rather than
-      fixed in this change.
-  Follow-up TODOs:
-    - Review .opencode/commands/ for hardcoded old-structure paths.
-    - AGENTS.md's migration-007 reference should be refreshed by whatever process
-      normally updates that file.
+  Runtime guidance (README.md, AGENTS.md) and stale-fact follow-ups:
+    - AGENTS.md is auto-updated by opencode tooling and was refreshed in #194
+      (spec-plan sync); its migration-007/008 admin claim remains as-the-monitor
+      reports, not hand-edited here.
 -->
 
 # App Home Services Constitution
@@ -241,22 +225,28 @@ Cargo.toml                  # workspace manifest
 src/                        # composition root (binary crate)
 ├── main.rs                 # wires every context together, starts the server
 ├── lib.rs                  # thin re-export layer
+├── router.rs               # build_router: route wiring + conditional SwaggerUi mount
+├── cors.rs                 # build_cors_layer
+├── security_headers.rs     # HTTP security headers (HSTS, X-Content-Type-Options, …)
 ├── health.rs
-└── api_doc.rs               # combined OpenAPI spec across all bounded contexts
+└── api_doc.rs              # combined OpenAPI spec across all bounded contexts
 
 crates/
 ├── shared/                 # shared kernel -- leaf dependency, no workspace deps
 │   └── src/
-│       ├── domain/         # DomainError, cross-context value objects
+│       ├── domain/         # DomainError, cross-context value objects + events
 │       ├── ports.rs        # cross-context ports (e.g. RateLimiter)
 │       ├── user_directory.rs  # cross-context ports with their own DTOs
 │       ├── event_bus.rs    # async pub/sub for cross-context domain events
 │       ├── auth.rs         # AuthenticatedUser JWT extractor
 │       ├── api.rs          # shared API types (ErrorResponse, etc.)
-│       └── config.rs       # infra-level Settings
+│       ├── net.rs          # trusted-proxy / network helpers
+│       └── config/
+│           └── settings.rs # infra-level Settings
 │
 ├── infrastructure/         # cross-cutting, depends only on shared
-│   └── src/                # db pool, telemetry (logging/metrics), rate limiter setup
+│   └── src/                # db pool, telemetry (logging/metrics), rate limiter setup,
+│                           #   access-token blacklist (memory/redis)
 │
 ├── <bounded-context>/      # one per context, e.g. auth/, profiles/, admin/
 │   └── src/
@@ -269,8 +259,8 @@ crates/
 │       │   ├── ports/
 │       │   └── (services/, where useful)
 │       ├── adapters/
-│       │   ├── inbound/
-│       │   └── outbound/
+│       │   ├── inbound/   # HTTP handlers, request/response DTOs
+│       │   └── outbound/  # ports implementations (or flat under adapters/, as in auth)
 │       ├── config/          # context-specific settings, where needed
 │       └── lib.rs
 │
@@ -280,7 +270,10 @@ crates/
 Each bounded-context crate's internal folder structure may evolve, but the
 Adapters → Application → Domain boundary within it (Principle I) and the
 no-cross-context-crate-dependency rule (Principle VII) must remain clear and
-enforced.
+enforced. Outbound adapters (database repos, external services) may be grouped
+under an `outbound/` subdirectory or kept directly in `adapters/` (as the `auth`
+crate does today); the distinction that matters is that they remain adapters
+below the application layer and are never reached from other contexts.
 
 ### Development Workflow
 
@@ -329,4 +322,4 @@ All code reviews must verify compliance with:
 
 Complexity must be justified. Prefer simple solutions that satisfy current requirements.
 
-**Version**: 1.2.0 | **Ratified**: 2026-07-01 | **Last Amended**: 2026-07-23
+**Version**: 1.2.1 | **Ratified**: 2026-07-01 | **Last Amended**: 2026-08-09

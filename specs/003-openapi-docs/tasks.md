@@ -15,6 +15,7 @@
 ## Path Conventions
 
 Modular Rust monolith: source under `src/` (composition root) + workspace crates under `crates/`, integration tests under `tests/` (project root).
+- **Note (post-crate-split)**: These checklist paths pre-date the modular monolith migration (#191). The same code now lives under `crates/auth/src/adapters/inbound/...`, `crates/shared/src/...`, and the combined `ApiDoc` in `src/api_doc.rs`; see the updated tree + Structure Decision in `plan.md` for the current layout.
 
 ---
 

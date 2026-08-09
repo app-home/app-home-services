@@ -9,7 +9,7 @@ Remediate the remaining vulnerabilities found during the post-PR security audit.
 
 ## WP A — Input Size Limits (HIGH)
 
-**Files**: src/adapters/inbound/login_routes.rs, refresh_routes.rs, oauth_callback.rs
+**Files**: crates/auth/src/adapters/inbound/login_routes.rs, refresh_routes.rs, oauth_callback.rs
 
 - Add max-length constants (256 for username, 4096 for password, 8192 for refresh_token, 16384 for id_token).
 - Add length checks returning 422 after empty checks (with 50ms timing-safe delay).
@@ -18,7 +18,7 @@ Remediate the remaining vulnerabilities found during the post-PR security audit.
 
 ## WP B — Atomic rate-limit check-and-record (MEDIUM)
 
-**Files**: src/application/ports/rate_limiter.rs, memory_rate_limiter.rs, redis_rate_limiter.rs, login_routes.rs, refresh_routes.rs
+**Files**: crates/shared/src/ports.rs (RateLimiter trait), crates/infrastructure/src/rate_limiter/memory.rs, crates/infrastructure/src/rate_limiter/redis.rs, crates/auth/src/adapters/inbound/login_routes.rs, crates/auth/src/adapters/inbound/refresh_routes.rs
 
 - Add try_check_and_record(&self, ip) -> bool to RateLimiter trait.
 - MemoryRateLimiter: hold the Mutex lock for both check + increment.
@@ -27,14 +27,14 @@ Remediate the remaining vulnerabilities found during the post-PR security audit.
 
 ## WP C — Metrics endpoint & bind address (MEDIUM)
 
-**Files**: src/infrastructure/config/settings.rs, src/main.rs
+**Files**: crates/shared/src/config/settings.rs, src/main.rs
 
 - Change default server_host from 0.0.0.0 to 127.0.0.1.
 - Log a warning at startup when binding to 0.0.0.0 about metrics exposure.
 
 ## WP D — LazyLock bcrypt expect (MEDIUM)
 
-**Files**: src/application/use_cases/login_with_password.rs
+**Files**: crates/auth/src/application/use_cases/login_with_password.rs
 
 - Change LazyLock<String> to LazyLock<Option<String>>.
 - On hash failure: log error, store None, fall back to thread::sleep(50ms).

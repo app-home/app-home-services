@@ -98,9 +98,10 @@ cargo test
 ```
 
 Expected: the following pass —
-- `tests/openapi_spec_test.rs` — spec served, valid, security scheme present.
-- `tests/openapi_coverage_test.rs` — every documented public endpoint present; `/metrics` absent (SC-008).
-- `tests/docs_contract_consistency_test.rs` — generated spec matches `specs/*/contracts/*.md` on endpoints/methods/status codes (SC-007).
+- `tests/openapi_spec_served.rs` — spec served, valid, security scheme present.
+- `tests/openapi_validity.rs` — spec structurally valid (top-level keys, paths, schemas, security scheme).
+- `tests/openapi_coverage.rs` — every documented public endpoint present; `/metrics` absent (SC-008).
+- `tests/markdown_contract_consistency.rs` — generated spec matches `specs/*/contracts/*.md` on endpoints/methods/status codes (SC-007).
 
 ## 8. Confirm complementary Markdown contracts are intact (FR-010)
 

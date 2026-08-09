@@ -23,12 +23,12 @@ Decisions (confirmed):
 
 ## WP A — Feature flag + response-header layer (HIGH)
 
-**Files**: `Cargo.toml`, `src/main.rs`
+**Files**: `Cargo.toml`, `src/security_headers.rs`
 
 - `Cargo.toml`: `tower-http` gains the `set-header` feature
   (`features = ["cors", "set-header"]`). Features do not change `Cargo.lock`.
-- `src/main.rs`: four chained `SetResponseHeaderLayer::overriding` layers are
-  applied to the whole router alongside `cors` (before `.with_state(state)`):
+- `src/security_headers.rs`: four chained `SetResponseHeaderLayer::overriding` layers are
+  applied to the whole router alongside `cors`:
   - `strict-transport-security: max-age=31536000; includeSubDomains`
   - `x-content-type-options: nosniff`
   - `x-frame-options: DENY`
@@ -38,12 +38,15 @@ Decisions (confirmed):
 
 ## WP B — Integration test (MEDIUM)
 
-**Files**: `tests/integration/security_headers_test.rs` (new),
-`tests/integration/mod.rs`
+**Files**: `tests/router_test.rs` (was planned as `tests/integration/security_headers_test.rs`)
 
-- `#[ignore]` test following the `cors_test.rs` pattern: `GET /api/health`
-  against a running server and asserts each of the four headers with its exact
-  expected value. Module registered in `mod.rs`.
+- `security_headers_are_applied_to_every_response_including_404s`
+  (`tests/router_test.rs:178`): sends `GET /no-such-route` through the in-process
+  router built by the composition-root split (#191) and asserts each of the four
+  headers with its exact expected value. Because the router is constructible
+  in-process, the assertion needs no running server and is **not** `#[ignore]`.
+  `cors_preflight_gets_security_headers_too` (`tests/router_test.rs:458`) asserts
+  the headers also wrap the CORS preflight 200 path.
 
 ## WP C — Plan document (LOW)
 
@@ -57,8 +60,8 @@ Decisions (confirmed):
 - `cargo build --locked`, `cargo clippy --workspace --all-targets`,
   `cargo fmt --check`, `cargo test --lib` — all green.
 - Manual: `curl -i http://localhost:3000/api/health` confirms all four headers.
-- Integration: `cargo test -- --ignored security_headers`
-  against a running server.
+- Test: `cargo test --test router_test` runs the in-process
+  `security_headers_are_applied_to_every_response_including_404s` assertion.
 
 ## Notes
 
