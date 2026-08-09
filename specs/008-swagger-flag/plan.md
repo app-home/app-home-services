@@ -22,7 +22,7 @@ default**, so a publicly reachable instance registers neither route (both return
 
 ## WP B — Conditional router mount (HIGH)
 
-**File**: `src/main.rs`
+**File**: `src/router.rs`
 
 - Build the main router as `let mut app = ...`; only when
   `settings.enable_swagger` is `true`, `app = app.merge(SwaggerUi::new("/swagger-ui").url("/api-docs/openapi.json", ApiDoc::openapi()))`.

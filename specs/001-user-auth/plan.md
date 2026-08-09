@@ -88,43 +88,71 @@ specs/001-user-auth/
 ### Source Code (repository root)
 
 ```text
-src/
+crates/auth/src/
 ├── domain/
 │   ├── entities/
 │   │   ├── user.rs
-│   │   └── user_action.rs
+│   │   ├── user_action.rs
+│   │   └── session.rs
+│   ├── services/
+│   │   └── password_verification.rs
+│   ├── aggregate.rs
 │   └── errors.rs
 │
 ├── application/
 │   ├── use_cases/
 │   │   ├── login_with_password.rs
 │   │   ├── login_with_google.rs
-│   │   └── record_audit_entry.rs
+│   │   ├── record_audit_entry.rs
+│   │   ├── logout.rs
+│   │   └── refresh_token.rs
 │   └── ports/
 │       ├── user_repository.rs
-│       └── auth_provider.rs
+│       ├── auth_provider.rs
+│       ├── session_repository.rs
+│       └── jwt_service.rs
 │
 ├── adapters/
 │   ├── inbound/
 │   │   ├── login_routes.rs
-│   │   └── oauth_callback.rs
-│   └── outbound/
-│       ├── postgres_user_repo.rs
-│       └── google_auth_provider.rs
+│   │   ├── oauth_callback.rs
+│   │   ├── refresh_routes.rs
+│   │   ├── logout_routes.rs
+│   │   └── responses.rs
+│   ├── postgres_user_repo.rs
+│   ├── postgres_session_repo.rs
+│   ├── jwt_service.rs
+│   ├── google_auth_provider.rs
+│   └── audit_event_handler.rs
 │
-├── infrastructure/
-│   ├── database/
-│   │   ├── migrations/
-│   │   └── db.rs
-│   ├── config/
-│   │   └── settings.rs
-│   └── telemetry/
-│       └── logging.rs
-│
-└── main.rs
+├── config/
+│   └── auth_settings.rs
+└── state.rs
+
+crates/shared/src/
+├── config/
+│   └── settings.rs
+├── auth.rs               # JWT middleware (AuthenticatedUser / JwtVerification)
+└── domain/
+    ├── errors.rs
+    └── value_objects/    # Email, HashedPassword, TokenPair, etc.
+
+crates/infrastructure/src/
+├── database.rs
+├── rate_limiter/         # memory.rs, redis.rs
+├── telemetry/            # logging.rs, metrics.rs, pollers.rs
+└── rate_limiter_setup.rs
+
+src/
+├── main.rs               # composition root (migrations, seed, server start)
+├── router.rs             # build_router
+├── cors.rs               # build_cors_layer
+├── api_doc.rs            # combined OpenAPI spec
+├── health.rs
+└── security_headers.rs
 ```
 
-**Structure Decision**: Single Rust project following Hexagonal Architecture as defined in the constitution. Domain entities in `domain/`, use cases and ports in `application/`, adapters in `adapters/`, infrastructure setup in `infrastructure/`.
+**Structure Decision**: Modular Rust monolith (DDD + hexagonal) as defined in the constitution. The `crates/auth` bounded context owns the auth domain, application ports/use-cases, and adapters; `crates/shared` holds config + cross-context value objects; `crates/infrastructure` provides db pool, telemetry, and rate limiters; the top-level `src/` crate is the composition root wiring routes, CORS, TLS, and the OpenAPI spec.
 
 ## Complexity Tracking
 

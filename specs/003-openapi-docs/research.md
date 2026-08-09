@@ -81,7 +81,7 @@ utoipa-swagger-ui = { version = "8", features = ["axum"] }
 
 ## Decision 5: Response DTOs replacing `serde_json::json!`
 
-**Decision**: Introduce typed DTOs in a new `src/adapters/inbound/responses.rs`, each deriving `Serialize` + `utoipa::ToSchema`, and refactor handlers to return them. Field names and values are preserved exactly to keep the wire contract backward compatible.
+**Decision**: Introduce typed DTOs in a new `crates/auth/src/adapters/inbound/responses.rs`, each deriving `Serialize` + `utoipa::ToSchema`, and refactor handlers to return them. Field names and values are preserved exactly to keep the wire contract backward compatible.
 
 DTOs and their current JSON sources:
 | DTO | Fields (preserved names) | Replaces |
@@ -90,7 +90,7 @@ DTOs and their current JSON sources:
 | `GoogleAuthResponse` | above + `is_new_user: bool` | google login 200 (`oauth_callback.rs:57`) |
 | `RefreshResponse` | `access_token: String`, `refresh_token: String` | refresh 200 (`refresh_routes.rs:76`) |
 | `StatusResponse` | `status: String` (="logged_out") | logout 200 (`logout_routes.rs:46`) |
-| `HealthResponse` | `status: String` (="ok") | health 200 (`main.rs:181`) |
+| `HealthResponse` | `status: String` (="ok") | health 200 (`src/health.rs`) |
 | `ErrorResponse` | `error: String` | all `{"error": ...}` responses |
 
 **Rationale**: `utoipa` needs concrete types to derive schemas; typed DTOs also add compile-time safety and remove stringly-typed JSON. Keeping names/values identical means no client-visible change to success responses.
@@ -106,8 +106,8 @@ DTOs and their current JSON sources:
 
 **Decision**: Implement two `cargo test` integration tests so they run in the existing workflow:
 
-1. **Coverage guard** (`tests/openapi_coverage_test.rs`): Assert every public endpoint the service documents by policy is present in `ApiDoc::openapi()`. Maintain an explicit expected-endpoint set (the 4 auth endpoints + `/api/health`); the test fails if the generated spec is missing any, or contains an undocumented one. Because `/metrics` is excluded by policy (Decision 7), it is asserted absent.
-2. **Contract consistency** (`tests/docs_contract_consistency_test.rs`): Parse the `specs/*/contracts/*.md` files to extract each endpoint's method, path, and documented status codes, then compare those sets against the generated spec. Report any divergence (endpoint/method/status-code mismatch). The most complete contract set lives in `specs/002-audit-security-hardening/contracts/`.
+1. **Coverage guard** (`tests/openapi_coverage.rs`): Assert every public endpoint the service documents by policy is present in `ApiDoc::openapi()`. Maintain an explicit expected-endpoint set (the 4 auth endpoints + `/api/health`); the test fails if the generated spec is missing any, or contains an undocumented one. Because `/metrics` is excluded by policy (Decision 7), it is asserted absent.
+2. **Contract consistency** (`tests/markdown_contract_consistency.rs`): Parse the `specs/*/contracts/*.md` files to extract each endpoint's method, path, and documented status codes, then compare those sets against the generated spec. Report any divergence (endpoint/method/status-code mismatch). The most complete contract set lives in `specs/002-audit-security-hardening/contracts/`.
 
 **Rationale**: Running as tests means CI/`cargo test` gates releases (Principle IV), catching drift before merge (SC-007, SC-008) without new external tooling.
 

@@ -17,6 +17,7 @@
 ## Path Conventions
 
 - **Single project**: `src/`, `tests/`, `migrations/` at repository root
+- **Note (post-crate-split)**: These checklist paths pre-date the modular monolith migration (#191). The same code now lives under `crates/auth/src/...`, `crates/shared/src/...`, and `crates/infrastructure/src/...`; see the updated tree in `plan.md` for the current layout.
 
 ---
 
