@@ -57,7 +57,7 @@ mod tests {
             rustls::crypto::aws_lc_rs::default_provider(),
         );
 
-        let CertifiedKey { cert, key_pair } =
+        let CertifiedKey { cert, signing_key } =
             rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
                 .expect("failed to generate self-signed cert");
 
@@ -66,7 +66,7 @@ mod tests {
         let cert_path = dir.join("cert.pem");
         let key_path = dir.join("key.pem");
         std::fs::write(&cert_path, cert.pem()).expect("failed to write cert PEM");
-        std::fs::write(&key_path, key_pair.serialize_pem()).expect("failed to write key PEM");
+        std::fs::write(&key_path, signing_key.serialize_pem()).expect("failed to write key PEM");
 
         let tls_config = axum_server::tls_rustls::RustlsConfig::from_pem_file(cert_path, key_path)
             .await
