@@ -52,4 +52,4 @@ async-trait = "0.1"
 tower = { version = "0.5", features = ["util"] }
 # Self-signed cert generation for the native-TLS smoke test (tests run offline,
 # no openssl dependency on any platform).
-rcgen = "0.13"
+rcgen = "0.14"
