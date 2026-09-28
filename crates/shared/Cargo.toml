@@ -11,7 +11,7 @@ thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 tokio = { version = "1", features = ["sync"] }
-utoipa = { version = "5.5" }
+utoipa = { version = "6.0" }
 axum = "0.8"
 jsonwebtoken = "11"
 async-trait = "0.1"
